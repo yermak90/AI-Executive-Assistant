@@ -1,0 +1,20 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+backend/.env
+backend/.pytest_cache/
+
+# Node / Expo
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+mobile/*.log
+mobile/.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
