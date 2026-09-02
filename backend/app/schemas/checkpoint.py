@@ -27,9 +27,14 @@ class CheckpointUpdate(BaseModel):
 class CheckpointGenerateRequest(BaseModel):
     """Trigger AUTO_RULE checkpoint generation. lead_time_days overrides the
     commitment's stored value for this generation; omit to use the stored
-    lead_time_days or fall back to the default planning table (FR-016)."""
+    lead_time_days or fall back to the default planning table (FR-016).
+    question/reason, when given, override the generated checkpoint's
+    default template text (same as control_question/control_reason at
+    creation) rather than requiring a separate follow-up edit call."""
 
     lead_time_days: int | None = Field(default=None, gt=0)
+    question: str | None = None
+    reason: str | None = None
 
 
 ASSESSABLE_VALUES = (CheckpointAssessment.ON_TRACK, CheckpointAssessment.AT_RISK, CheckpointAssessment.BLOCKED)
@@ -66,3 +71,13 @@ class CheckpointRead(BaseModel):
     completed_at: datetime | None
     skipped_at: datetime | None
     assessed_at: datetime | None
+
+
+class CheckpointGenerateResponse(BaseModel):
+    """FR-016: if the rule-computed date already passed (or falls before the
+    commitment was created), that signal must not be silently swallowed —
+    the caller needs to know an intervention is needed right now, even
+    though a checkpoint was still created (in the past) rather than dropped."""
+
+    checkpoints: list[CheckpointRead]
+    immediate_attention_required: bool

@@ -53,8 +53,23 @@ class CommitmentCreate(BaseModel):
         return self
 
 
+def _reject_deadline_on_patch(value: datetime | None) -> datetime | None:
+    """P0 review: PATCH must not be a second way to change a commitment's
+    deadline — POST /commitments/{id}/reschedule is the only path, since it's
+    the only one that validates the new AUTO_RULE plan, cascades a null
+    deadline to lead_time_days/checkpoints, and returns
+    immediate_attention_required/manual_checkpoints_after_deadline. `deadline`
+    stays declared on this schema only so an explicit value (a date, or an
+    explicit null) is rejected with a clean 422 instead of silently ignored
+    or crashing further down; it is never read by the update service."""
+    raise ValueError(
+        "deadline cannot be changed via PATCH /commitments/{id}; use POST /commitments/{id}/reschedule instead"
+    )
+
+
 class CommitmentUpdate(BaseModel):
-    """General-purpose update. Deadline changes here are still tracked in history."""
+    """General-purpose update. Deadline is intentionally NOT settable here —
+    see _reject_deadline_on_patch."""
 
     title: str | None = Field(default=None, min_length=1, max_length=500)
     description: str | None = None
@@ -64,9 +79,11 @@ class CommitmentUpdate(BaseModel):
     direction: Direction | None = None
     deadline: datetime | None = None
     source_text: str | None = None
+    lead_time_days: int | None = Field(default=None, gt=0)
 
     _validate_title = field_validator("title")(reject_explicit_null)
     _validate_direction = field_validator("direction")(reject_explicit_null)
+    _reject_deadline = field_validator("deadline")(_reject_deadline_on_patch)
 
 
 class RescheduleRequest(BaseModel):
@@ -110,3 +127,42 @@ class CommitmentRead(BaseModel):
 class CommitmentDetail(CommitmentRead):
     history: list[CommitmentHistoryRead] = []
     checkpoints: list[CheckpointRead] = []
+
+
+class CommitmentCreateResponse(BaseModel):
+    """P0-04 review follow-up: creating a commitment with enable_control=True
+    and a deadline close enough to trigger the immediate-attention clamp
+    (see generate_auto_checkpoints) must not swallow that signal — the
+    caller needs it alongside the created commitment, not only discoverable
+    later via control_health."""
+
+    commitment: CommitmentDetail
+    immediate_attention_required: bool
+
+
+class ControlSettingsRequest(BaseModel):
+    """PRD P1-06 review follow-up: the "Настроить контроль" form is saved as
+    one call — lead_time_days, question, and reason are the full desired
+    state (an explicit null for question/reason is a real clear), not a
+    partial patch, and are persisted together with the (re)generated
+    AUTO_RULE checkpoint in a single backend transaction."""
+
+    lead_time_days: int | None = Field(default=None, gt=0)
+    question: str | None = None
+    reason: str | None = None
+
+
+class ControlSettingsResponse(BaseModel):
+    commitment: CommitmentDetail
+    immediate_attention_required: bool
+
+
+class RescheduleResponse(BaseModel):
+    """P1-08: a reschedule can silently strand MANUAL checkpoints past the
+    new deadline, or clamp a shifted AUTO_RULE checkpoint to created_at —
+    both need to reach the caller instead of disappearing into the plain
+    CommitmentDetail response."""
+
+    commitment: CommitmentDetail
+    immediate_attention_required: bool
+    manual_checkpoints_after_deadline: list[CheckpointRead]

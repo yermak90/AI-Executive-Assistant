@@ -1,5 +1,14 @@
 import { apiClient } from "./client";
-import { Bucket, Commitment, CommitmentDetail, CommitmentHistoryEntry, ControlHealth, Direction, CommitmentStatus } from "../types/domain";
+import {
+  Bucket,
+  Checkpoint,
+  Commitment,
+  CommitmentDetail,
+  CommitmentHistoryEntry,
+  ControlHealth,
+  Direction,
+  CommitmentStatus,
+} from "../types/domain";
 
 export interface CommitmentListFilters {
   direction?: Direction;
@@ -33,8 +42,30 @@ export interface UpdateCommitmentInput {
   counterparty_person_id?: string | null;
   project_id?: string | null;
   direction?: Direction;
-  deadline?: string | null;
   source_text?: string | null;
+  lead_time_days?: number | null;
+}
+
+export interface RescheduleResult {
+  commitment: CommitmentDetail;
+  immediate_attention_required: boolean;
+  manual_checkpoints_after_deadline: Checkpoint[];
+}
+
+export interface CreateCommitmentResult {
+  commitment: CommitmentDetail;
+  immediate_attention_required: boolean;
+}
+
+export interface ControlSettingsInput {
+  lead_time_days: number | null;
+  question: string | null;
+  reason: string | null;
+}
+
+export interface ControlSettingsResult {
+  commitment: CommitmentDetail;
+  immediate_attention_required: boolean;
 }
 
 function buildQuery(filters: CommitmentListFilters): string {
@@ -53,12 +84,14 @@ function buildQuery(filters: CommitmentListFilters): string {
 export const commitmentsApi = {
   list: (filters: CommitmentListFilters = {}) => apiClient.get<Commitment[]>(`/commitments${buildQuery(filters)}`),
   get: (id: string) => apiClient.get<CommitmentDetail>(`/commitments/${id}`),
-  create: (data: CreateCommitmentInput) => apiClient.post<CommitmentDetail>("/commitments", data),
+  create: (data: CreateCommitmentInput) => apiClient.post<CreateCommitmentResult>("/commitments", data),
   update: (id: string, data: UpdateCommitmentInput) =>
     apiClient.patch<CommitmentDetail>(`/commitments/${id}`, data),
+  updateControlSettings: (id: string, data: ControlSettingsInput) =>
+    apiClient.post<ControlSettingsResult>(`/commitments/${id}/control-settings`, data),
   complete: (id: string) => apiClient.post<CommitmentDetail>(`/commitments/${id}/complete`),
   reschedule: (id: string, deadline: string | null) =>
-    apiClient.post<CommitmentDetail>(`/commitments/${id}/reschedule`, { deadline }),
+    apiClient.post<RescheduleResult>(`/commitments/${id}/reschedule`, { deadline }),
   cancel: (id: string) => apiClient.post<CommitmentDetail>(`/commitments/${id}/cancel`),
   history: (id: string) => apiClient.get<CommitmentHistoryEntry[]>(`/commitments/${id}/history`),
 };

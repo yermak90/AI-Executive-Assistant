@@ -76,6 +76,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Unit tests
+        run: npm test -- --runInBand
+
       - name: Expo Doctor
         run: npx expo-doctor
 

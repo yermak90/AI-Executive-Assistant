@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { commitmentsApi, CommitmentListFilters, CreateCommitmentInput, UpdateCommitmentInput } from "../api/commitments";
+import {
+  commitmentsApi,
+  CommitmentListFilters,
+  ControlSettingsInput,
+  CreateCommitmentInput,
+  UpdateCommitmentInput,
+} from "../api/commitments";
 
 const commitmentsKey = (filters: CommitmentListFilters = {}) => ["commitments", filters] as const;
 const commitmentKey = (id: string) => ["commitment", id] as const;
@@ -40,6 +46,14 @@ export function useUpdateCommitment(id: string) {
   const invalidate = useInvalidateCommitments();
   return useMutation({
     mutationFn: (data: UpdateCommitmentInput) => commitmentsApi.update(id, data),
+    onSuccess: () => invalidate(id),
+  });
+}
+
+export function useUpdateControlSettings(id: string) {
+  const invalidate = useInvalidateCommitments();
+  return useMutation({
+    mutationFn: (data: ControlSettingsInput) => commitmentsApi.updateControlSettings(id, data),
     onSuccess: () => invalidate(id),
   });
 }

@@ -18,18 +18,26 @@ export function useCreateCheckpoint(commitmentId: string) {
   });
 }
 
+export interface GenerateCheckpointsInput {
+  leadTimeDays?: number | null;
+  question?: string | null;
+  reason?: string | null;
+}
+
 export function useGenerateCheckpoints(commitmentId: string) {
   const invalidate = useInvalidateCommitment(commitmentId);
   return useMutation({
-    mutationFn: (leadTimeDays?: number | null) => checkpointsApi.generate(commitmentId, leadTimeDays),
+    mutationFn: ({ leadTimeDays, question, reason }: GenerateCheckpointsInput) =>
+      checkpointsApi.generate(commitmentId, leadTimeDays, question, reason),
     onSuccess: invalidate,
   });
 }
 
-export function useUpdateCheckpoint(commitmentId: string, checkpointId: string) {
+export function useUpdateCheckpoint(commitmentId: string) {
   const invalidate = useInvalidateCommitment(commitmentId);
   return useMutation({
-    mutationFn: (data: UpdateCheckpointInput) => checkpointsApi.update(checkpointId, data),
+    mutationFn: ({ checkpointId, data }: { checkpointId: string; data: UpdateCheckpointInput }) =>
+      checkpointsApi.update(checkpointId, data),
     onSuccess: invalidate,
   });
 }

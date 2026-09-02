@@ -5,11 +5,12 @@ owe you, what you owe others, what your team is responsible for — and get a
 managerial checkpoint *before* a deadline is missed, not just a report after
 it's blown.
 
-Sprint 1 delivers the manual, AI-free foundation described in the PRD (v2.0):
-people, projects, commitments with a real state machine, all five time
-buckets (Overdue/Today/Tomorrow/Later/No deadline), an archive, detailed
-change history, and managerial checkpoints with rule-based planning and risk
-assessment. No audio, no LLM, no integrations — those are Sprint 2+.
+Sprint 1 delivers the manual, AI-free foundation described in
+[`PRD.md`](./PRD.md) (v2.0): people, projects, commitments with a real state
+machine, all five time buckets (Overdue/Today/Tomorrow/Later/No deadline),
+an archive, detailed change history, and managerial checkpoints with
+rule-based planning and risk assessment. No audio, no LLM, no integrations —
+those are Sprint 2+.
 
 ## Repository layout
 
@@ -107,14 +108,24 @@ npx expo start
 Then press `i` for iOS simulator, `a` for Android emulator, or scan the QR
 code with Expo Go on a physical device.
 
-A `.npmrc` with `legacy-peer-deps=true` is committed in `mobile/`. This is
-required because `expo-router` pulls in `@expo/ui`'s web tab-bar variant,
-which transitively depends on `@radix-ui/*` packages with a strict
-`react-dom` peer requirement that a native-only app never installs. Without
-this setting `npm ci` fails on a fresh clone even though `npm install` alone
-appears to work (it just downgrades the conflict to a warning) — see
-"Known limitations" below for the diagnosis. This is a normal, well-known fix
-for this cause, not a workaround-of-last-resort.
+`npm ci` runs clean with no `legacy-peer-deps` flag and no `.npmrc` override.
+The one real conflict here — `expo-router` pulls in `@expo/ui`'s web
+tab-bar variant, which transitively depends on `@radix-ui/*` packages with a
+`react-dom` peer requirement — is fixed at its root cause instead of being
+blanket-suppressed: `package.json` pins
+`"overrides": { "react-dom": "19.2.3" }` to the exact version already used
+for `react`, so the peer check that `react-dom` itself makes on `react` is
+satisfied instead of resolving to a newer `react-dom` that wants a newer
+`react` than this project pins. `react-dom` is never an actual runtime
+dependency of this native-only app; the override exists purely to make an
+unavoidable peer-resolution walk terminate at a version that already
+satisfies everyone.
+
+This intentionally does **not** hide other peer conflicts: an unrelated,
+non-blocking `react-native-worklets` peer warning (from `@expo/ui`'s
+optional reanimated integration, which this app doesn't use) still prints
+during install — that's `npm`'s own auto-resolution of an *optional* peer,
+not a suppressed error, and is safe to ignore.
 
 ### Configuring the API base URL
 
@@ -260,11 +271,16 @@ All steps pass. ✅
   used for verification instead; this is a sandbox networking artifact, not
   a project defect, but it hasn't been independently re-confirmed outside
   this environment.
-- **`npx expo-doctor` reports 19/21 passing here**, with the 2 failures being
-  network calls to `docs.expo.dev` / the React Native Directory API that this
-  sandbox's egress proxy blocks (confirmed by the "Host not in allowlist"
-  text leaking into a JSON parse error). These should pass on a machine with
-  normal internet access; not independently confirmed.
+- **`npx expo-doctor` can report failures inside network-restricted
+  sandboxes** that are unrelated to the project: some of its checks call out
+  to `docs.expo.dev` / the React Native Directory API, and an egress proxy
+  blocking those calls surfaces as a doctor failure (a "Host not in
+  allowlist" message leaking into a JSON parse error is the tell). Treat
+  those specific failures as an environment artifact, not a project defect
+  — but always re-run `expo-doctor` on a machine with normal internet access
+  and record the actual pass count for that run rather than reusing a
+  number from a previous run; see the verification report for this
+  repository's most recent real result.
 - **No physical device or simulator was used.** All UI verification was via
   Expo web + a headless browser (see "Visual / UI testing"). The native
   date/time picker's actual on-device UI, gesture handling, and safe-area

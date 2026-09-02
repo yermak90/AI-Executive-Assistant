@@ -8,12 +8,16 @@ from app.models.commitment import CommitmentStatus, Direction
 from app.schemas.commitment import (
     Bucket,
     CommitmentCreate,
+    CommitmentCreateResponse,
     CommitmentDetail,
     CommitmentHistoryRead,
     CommitmentRead,
     CommitmentUpdate,
     ControlHealth,
+    ControlSettingsRequest,
+    ControlSettingsResponse,
     RescheduleRequest,
+    RescheduleResponse,
 )
 from app.services import commitments as commitments_service
 from app.services.commitments import CommitmentFilters
@@ -45,10 +49,13 @@ def list_commitments(
     return [commitments_service.to_commitment_read(c) for c in commitments]
 
 
-@router.post("", response_model=CommitmentDetail, status_code=201)
-def create_commitment(data: CommitmentCreate, db: Session = Depends(get_db)) -> CommitmentDetail:
-    commitment = commitments_service.create_commitment(db, data)
-    return commitments_service.to_commitment_detail(commitment)
+@router.post("", response_model=CommitmentCreateResponse, status_code=201)
+def create_commitment(data: CommitmentCreate, db: Session = Depends(get_db)) -> CommitmentCreateResponse:
+    commitment, immediate_attention = commitments_service.create_commitment(db, data)
+    return CommitmentCreateResponse(
+        commitment=commitments_service.to_commitment_detail(commitment),
+        immediate_attention_required=immediate_attention,
+    )
 
 
 @router.get("/{commitment_id}", response_model=CommitmentDetail)
@@ -65,18 +72,37 @@ def update_commitment(
     return commitments_service.to_commitment_detail(commitment)
 
 
+@router.post("/{commitment_id}/control-settings", response_model=ControlSettingsResponse)
+def update_control_settings(
+    commitment_id: uuid.UUID, data: ControlSettingsRequest, db: Session = Depends(get_db)
+) -> ControlSettingsResponse:
+    commitment, immediate_attention = commitments_service.update_control_settings(
+        db, commitment_id, data.lead_time_days, data.question, data.reason
+    )
+    return ControlSettingsResponse(
+        commitment=commitments_service.to_commitment_detail(commitment),
+        immediate_attention_required=immediate_attention,
+    )
+
+
 @router.post("/{commitment_id}/complete", response_model=CommitmentDetail)
 def complete_commitment(commitment_id: uuid.UUID, db: Session = Depends(get_db)) -> CommitmentDetail:
     commitment = commitments_service.complete_commitment(db, commitment_id)
     return commitments_service.to_commitment_detail(commitment)
 
 
-@router.post("/{commitment_id}/reschedule", response_model=CommitmentDetail)
+@router.post("/{commitment_id}/reschedule", response_model=RescheduleResponse)
 def reschedule_commitment(
     commitment_id: uuid.UUID, data: RescheduleRequest, db: Session = Depends(get_db)
-) -> CommitmentDetail:
-    commitment = commitments_service.reschedule_commitment(db, commitment_id, data.deadline)
-    return commitments_service.to_commitment_detail(commitment)
+) -> RescheduleResponse:
+    commitment, immediate_attention, manual_after = commitments_service.reschedule_commitment(
+        db, commitment_id, data.deadline
+    )
+    return RescheduleResponse(
+        commitment=commitments_service.to_commitment_detail(commitment),
+        immediate_attention_required=immediate_attention,
+        manual_checkpoints_after_deadline=list(manual_after),
+    )
 
 
 @router.post("/{commitment_id}/cancel", response_model=CommitmentDetail)
