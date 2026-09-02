@@ -426,6 +426,19 @@ def recalculate_auto_checkpoints(
     days before" stays "2 days before" the new deadline. MANUAL checkpoints
     and already COMPLETED/SKIPPED ones are left untouched.
 
+    Review follow-up: this validates the *entire* new plan before mutating
+    anything. Pass 1 computes every new scheduled_at with no DB writes. Pass
+    2 deterministically de-duplicates AUTO_RULE checkpoints that would land
+    on the exact same instant (e.g. several all clamped to created_at): the
+    one with the earliest original scheduled_at wins and gets recalculated,
+    the rest are removed with no history (same convention as removing any
+    other never-actioned PENDING checkpoint with no slot left in the plan).
+    Pass 3 checks the surviving times against every MANUAL/COMPLETED/SKIPPED
+    checkpoint and raises ValidationAppError (422) on the first collision —
+    before any checkpoint has been moved, so a caller who already applied
+    the deadline change to `commitment` in the same transaction rolls that
+    back too. Only pass 4 writes anything.
+
     Returns immediate_attention_required (P0-04/P1-08): shifting a
     checkpoint to before the commitment's created_at (e.g. a reschedule to a
     much closer deadline) must clamp it to created_at rather than create an
@@ -434,19 +447,56 @@ def recalculate_auto_checkpoints(
     if old_deadline is None or new_deadline is None:
         return False
 
+    auto_checkpoints = [
+        cp
+        for cp in commitment.checkpoints
+        if cp.status == CheckpointStatus.PENDING and cp.source_type == CheckpointSourceType.AUTO_RULE
+    ]
+    if not auto_checkpoints:
+        return False
+
+    protected = [cp for cp in commitment.checkpoints if cp not in auto_checkpoints]
+
+    # Pass 1: compute every new scheduled_at, no mutation yet.
     immediate_attention = False
-
-    for checkpoint in commitment.checkpoints:
-        if checkpoint.status != CheckpointStatus.PENDING or checkpoint.source_type != CheckpointSourceType.AUTO_RULE:
-            continue
-
+    planned: list[tuple[CommitmentCheckpoint, datetime]] = []
+    for checkpoint in auto_checkpoints:
         gap = old_deadline - checkpoint.scheduled_at
         new_scheduled_at = new_deadline - gap
         if new_scheduled_at < commitment.created_at:
             new_scheduled_at = commitment.created_at
             immediate_attention = True
+        planned.append((checkpoint, new_scheduled_at))
 
+    # Pass 2: de-duplicate collisions among the newly-planned AUTO_RULE
+    # times deterministically — process in original-scheduled_at order so
+    # the earliest-scheduled checkpoint always wins a tie.
+    planned.sort(key=lambda pair: pair[0].scheduled_at)
+    seen_times: set[datetime] = set()
+    deduped: list[tuple[CommitmentCheckpoint, datetime]] = []
+    to_remove: list[CommitmentCheckpoint] = []
+    for checkpoint, new_scheduled_at in planned:
+        if new_scheduled_at in seen_times:
+            to_remove.append(checkpoint)
+            continue
+        seen_times.add(new_scheduled_at)
+        deduped.append((checkpoint, new_scheduled_at))
+
+    # Pass 3: check the surviving plan against every protected checkpoint.
+    for _checkpoint, new_scheduled_at in deduped:
+        conflict = next((cp for cp in protected if cp.scheduled_at == new_scheduled_at), None)
+        if conflict is not None:
+            raise ValidationAppError(
+                f"Cannot reschedule an automatic checkpoint to {new_scheduled_at.isoformat()}: a "
+                f"{conflict.source_type.value} checkpoint ({conflict.status.value.lower()}) "
+                "already exists at that exact time"
+            )
+
+    # Pass 4: everything validated — now it's safe to write.
+    for checkpoint, new_scheduled_at in deduped:
         old_scheduled_at = checkpoint.scheduled_at
+        if new_scheduled_at == old_scheduled_at:
+            continue
         checkpoint.scheduled_at = new_scheduled_at
         _add_history(
             db,
@@ -456,13 +506,19 @@ def recalculate_auto_checkpoints(
             {"scheduled_at": new_scheduled_at.isoformat()},
         )
 
+    for checkpoint in to_remove:
+        commitment.checkpoints.remove(checkpoint)
+        db.delete(checkpoint)
+
     return immediate_attention
 
 
 def manual_checkpoints_after(commitment: Commitment, deadline: datetime | None) -> list[CommitmentCheckpoint]:
     """P1-08: MANUAL checkpoints are never moved by a reschedule, so a new,
-    earlier deadline can leave one scheduled after the deadline it is meant
-    to check on. Surface those instead of leaving the mismatch silent."""
+    earlier deadline can leave one scheduled at-or-after the deadline it is
+    meant to check on (a checkpoint scheduled for the exact deadline instant
+    is no longer "before the deadline" either). Surface those instead of
+    leaving the mismatch silent."""
     if deadline is None:
         return []
     return [
@@ -470,7 +526,7 @@ def manual_checkpoints_after(commitment: Commitment, deadline: datetime | None) 
         for cp in commitment.checkpoints
         if cp.status == CheckpointStatus.PENDING
         and cp.source_type == CheckpointSourceType.MANUAL
-        and cp.scheduled_at > deadline
+        and cp.scheduled_at >= deadline
     ]
 
 

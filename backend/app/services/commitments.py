@@ -366,6 +366,9 @@ def update_control_settings(
     commitment = get_commitment_or_raise(db, commitment_id)
     _require_active(commitment, "edit")
 
+    if lead_time_days is not None and commitment.deadline is None:
+        raise ValidationAppError("Cannot enable preliminary control for a commitment without a deadline")
+
     old_lead_time_days = commitment.lead_time_days
     if lead_time_days != old_lead_time_days:
         commitment.lead_time_days = lead_time_days
@@ -382,7 +385,9 @@ def update_control_settings(
     if lead_time_days is None:
         if old_lead_time_days is not None:
             checkpoints_service.disable_auto_control(db, commitment, tz_now())
-    elif commitment.deadline is not None:
+    else:
+        # The guard above already ensures a deadline exists whenever
+        # lead_time_days is being set.
         _, immediate_attention = checkpoints_service.generate_auto_checkpoints(
             db,
             commitment,
@@ -413,7 +418,29 @@ def reschedule_commitment(
             new_value={"deadline": new_deadline.isoformat() if new_deadline else None},
         )
     )
-    immediate_attention = checkpoints_service.recalculate_auto_checkpoints(db, commitment, old_deadline, new_deadline)
+
+    immediate_attention = False
+    if new_deadline is None:
+        # P1 review: a commitment without a deadline can't support a
+        # deadline-relative lead time or AUTO_RULE checkpoints — turn
+        # control off entirely (one transaction with the deadline clear)
+        # instead of leaving a dangling lead_time_days and stale PENDING
+        # AUTO_RULE checkpoints with nothing to be relative to.
+        if commitment.lead_time_days is not None:
+            old_lead_time_days = commitment.lead_time_days
+            commitment.lead_time_days = None
+            db.add(
+                CommitmentHistory(
+                    commitment_id=commitment.id,
+                    event_type=HistoryEventType.UPDATED,
+                    old_value={"lead_time_days": _render_field(db, "lead_time_days", old_lead_time_days)},
+                    new_value={"lead_time_days": _render_field(db, "lead_time_days", None)},
+                )
+            )
+        checkpoints_service.disable_auto_control(db, commitment, tz_now())
+    else:
+        immediate_attention = checkpoints_service.recalculate_auto_checkpoints(db, commitment, old_deadline, new_deadline)
+
     manual_after = checkpoints_service.manual_checkpoints_after(commitment, new_deadline)
     db.commit()
     return get_commitment_or_raise(db, commitment.id), immediate_attention, manual_after

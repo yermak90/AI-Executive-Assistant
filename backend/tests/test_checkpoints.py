@@ -338,6 +338,159 @@ def test_reschedule_to_near_deadline_clamps_auto_checkpoint_and_flags_immediate_
     assert datetime.fromisoformat(auto_checkpoint["scheduled_at"]) == datetime.fromisoformat(commitment["created_at"])
 
 
+# --- Reschedule must never touch a protected checkpoint (P0 review) --------
+
+
+def test_reschedule_conflicts_with_manual_checkpoint_and_rolls_back(client):
+    """Recalculating an AUTO_RULE checkpoint's scheduled_at onto a MANUAL
+    checkpoint's exact time must be a controlled error, and the whole
+    reschedule (deadline, lead_time_days, every checkpoint, history) must
+    roll back with it — not just the checkpoint move."""
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+    auto_checkpoint = commitment["checkpoints"][0]
+
+    new_deadline = deadline - timedelta(days=5)
+    conflict_at = new_deadline - timedelta(days=2)  # where the 2-day gap would move the AUTO_RULE checkpoint to
+    manual = client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ручная проверка", "scheduled_at": conflict_at.isoformat()},
+    ).json()
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": new_deadline.isoformat()})
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert detail["deadline"] == commitment["deadline"]
+    assert detail["lead_time_days"] == 2
+    by_id = {cp["id"]: cp for cp in detail["checkpoints"]}
+    assert by_id[auto_checkpoint["id"]]["scheduled_at"] == auto_checkpoint["scheduled_at"]
+    assert by_id[manual["id"]]["scheduled_at"] == manual["scheduled_at"]
+    assert by_id[manual["id"]]["status"] == "PENDING"
+    assert not any(h["event_type"] == "DEADLINE_CHANGED" for h in detail["history"])
+    assert not any(h["event_type"] == "CHECKPOINT_AUTO_RECALCULATED" for h in detail["history"])
+
+
+def test_reschedule_conflicts_with_completed_checkpoint_and_rolls_back(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+    auto_checkpoint = commitment["checkpoints"][0]
+
+    new_deadline = deadline - timedelta(days=5)
+    conflict_at = new_deadline - timedelta(days=2)
+    completed = client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ручная проверка", "scheduled_at": conflict_at.isoformat()},
+    ).json()
+    client.post(f"/api/v1/checkpoints/{completed['id']}/assess", json={"assessment": "ON_TRACK"})
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": new_deadline.isoformat()})
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert detail["deadline"] == commitment["deadline"]
+    assert detail["lead_time_days"] == 2
+    by_id = {cp["id"]: cp for cp in detail["checkpoints"]}
+    assert by_id[auto_checkpoint["id"]]["scheduled_at"] == auto_checkpoint["scheduled_at"]
+    assert by_id[completed["id"]]["status"] == "COMPLETED"
+    assert by_id[completed["id"]]["assessment"] == "ON_TRACK"
+    assert not any(h["event_type"] == "DEADLINE_CHANGED" for h in detail["history"])
+
+
+def test_reschedule_deduplicates_multiple_auto_checkpoints_clamped_to_created_at(client):
+    """A commitment far enough out gets 2 default-rule AUTO_RULE checkpoints
+    (midpoint + deadline-3d). Rescheduling to a deadline so close that both
+    would recalculate to before created_at must clamp both — but two
+    checkpoints can't occupy the same instant, so the collision must be
+    deduplicated deterministically instead of producing a duplicate or an
+    unrelated error."""
+    deadline = tz_now() + timedelta(days=30)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True)
+    assert len(commitment["checkpoints"]) == 2
+    earliest = min(commitment["checkpoints"], key=lambda cp: cp["scheduled_at"])
+
+    new_deadline = tz_now() + timedelta(hours=1)
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": new_deadline.isoformat()})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["immediate_attention_required"] is True
+
+    checkpoints = body["commitment"]["checkpoints"]
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["id"] == earliest["id"]
+    assert checkpoints[0]["scheduled_at"] == commitment["created_at"]
+
+
+# --- Removing the deadline turns control off (P1 review) -------------------
+
+
+def test_reschedule_to_no_deadline_clears_lead_time_and_skips_pending_auto_checkpoint(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+    auto_checkpoint_id = commitment["checkpoints"][0]["id"]
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": None})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["commitment"]
+
+    assert body["deadline"] is None
+    assert body["lead_time_days"] is None
+    by_id = {cp["id"]: cp for cp in body["checkpoints"]}
+    assert by_id[auto_checkpoint_id]["status"] == "SKIPPED"
+    assert any(h["event_type"] == "CHECKPOINT_SKIPPED" for h in body["history"])
+    assert any(
+        h["event_type"] == "UPDATED" and h.get("new_value", {}).get("lead_time_days") is None
+        for h in body["history"]
+    )
+
+
+def test_reschedule_to_no_deadline_leaves_manual_checkpoint_untouched(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat())
+    manual = client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ручная проверка", "scheduled_at": (tz_now() + timedelta(days=3)).isoformat()},
+    ).json()
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": None})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()["commitment"]
+
+    by_id = {cp["id"]: cp for cp in body["checkpoints"]}
+    assert by_id[manual["id"]]["status"] == "PENDING"
+    assert by_id[manual["id"]]["scheduled_at"] == manual["scheduled_at"]
+
+
+def test_control_settings_rejects_enabling_without_deadline(client):
+    commitment = _create_commitment(client, deadline=None)
+
+    resp = client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 2, "question": None, "reason": None},
+    )
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert detail["lead_time_days"] is None
+    assert detail["checkpoints"] == []
+
+
+def test_manual_checkpoint_exactly_at_new_deadline_is_reported_as_a_warning(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat())
+
+    new_deadline = tz_now() + timedelta(days=3)
+    manual = client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ровно на новом сроке", "scheduled_at": new_deadline.isoformat()},
+    ).json()
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": new_deadline.isoformat()})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert any(cp["id"] == manual["id"] for cp in body["manual_checkpoints_after_deadline"])
+
+
 # --- Completion/cancellation skip pending checkpoints (FR-010/FR-011) ------
 
 
