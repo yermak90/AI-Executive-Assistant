@@ -11,6 +11,7 @@ import { LoadingState } from "../../src/components/LoadingState";
 import { SummaryCard } from "../../src/components/SummaryCard";
 import { useCommitmentsQuery } from "../../src/hooks/useCommitments";
 import { colors, spacing, typography } from "../../src/theme";
+import { Commitment } from "../../src/types/domain";
 import { formatHeaderDate } from "../../src/utils/date";
 import { getGreeting, CURRENT_USER_NAME } from "../../src/utils/user";
 
@@ -18,26 +19,39 @@ export default function TodayScreen() {
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
 
+  // A single ACTIVE query carries backend-computed `bucket` and
+  // `control_health` per item — grouping below only reads those values,
+  // it never re-derives overdue/today/risk logic on the client (4.2).
   const activeQuery = useCommitmentsQuery({ status: "ACTIVE" });
-  const todayQuery = useCommitmentsQuery({ due: "today" });
-  const overdueQuery = useCommitmentsQuery({ overdue: true });
-
-  const isLoading = activeQuery.isLoading || todayQuery.isLoading || overdueQuery.isLoading;
-  const isError = activeQuery.isError || todayQuery.isError || overdueQuery.isError;
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([activeQuery.refetch(), todayQuery.refetch(), overdueQuery.refetch()]);
+    await activeQuery.refetch();
     setRefreshing(false);
   };
 
-  if (isLoading) return <LoadingState />;
-  if (isError || !activeQuery.data || !todayQuery.data || !overdueQuery.data) {
-    return <ErrorState onRetry={onRefresh} />;
-  }
+  if (activeQuery.isLoading) return <LoadingState />;
+  if (activeQuery.isError || !activeQuery.data) return <ErrorState onRetry={onRefresh} />;
 
-  const owedToMeCount = activeQuery.data.filter((c) => c.direction === "OWED_TO_ME").length;
-  const iOweCount = activeQuery.data.filter((c) => c.direction === "I_OWE").length;
+  const active = activeQuery.data;
+  const owedToMeCount = active.filter((c) => c.direction === "OWED_TO_ME").length;
+  const iOweCount = active.filter((c) => c.direction === "I_OWE").length;
+  const todayCount = active.filter((c) => c.bucket === "today").length;
+  const overdueCount = active.filter((c) => c.bucket === "overdue").length;
+
+  const shown = new Set<string>();
+  const takeUnshown = (items: Commitment[]) => {
+    const result = items.filter((c) => !shown.has(c.id));
+    result.forEach((c) => shown.add(c.id));
+    return result;
+  };
+
+  const blocked = takeUnshown(active.filter((c) => c.control_health === "BLOCKED"));
+  const atRisk = takeUnshown(active.filter((c) => c.control_health === "AT_RISK"));
+  const checkDue = takeUnshown(active.filter((c) => c.control_health === "CHECK_DUE"));
+  const dueToday = takeUnshown(active.filter((c) => c.bucket === "today" || c.bucket === "overdue"));
+
+  const hasAnything = blocked.length + atRisk.length + checkDue.length + dueToday.length > 0;
 
   return (
     <ScrollView
@@ -55,13 +69,13 @@ export default function TodayScreen() {
       <View style={styles.summaryGrid}>
         <SummaryCard
           label="Сегодня"
-          count={todayQuery.data.length}
+          count={todayCount}
           color={colors.primary}
           onPress={() => router.push("/(tabs)/commitments")}
         />
         <SummaryCard
           label="Просрочено"
-          count={overdueQuery.data.length}
+          count={overdueCount}
           color={colors.danger}
           onPress={() => router.push("/(tabs)/commitments")}
         />
@@ -78,21 +92,36 @@ export default function TodayScreen() {
         <Text style={styles.soonBadge}>Скоро</Text>
       </Pressable>
 
-      <Text style={styles.sectionTitle}>На контроле сегодня</Text>
-
-      {todayQuery.data.length === 0 ? (
+      {!hasAnything ? (
         <EmptyState
           title="Пока нет обязательств"
           description={"Добавьте первое обязательство,\nчтобы начать контроль."}
         />
       ) : (
-        todayQuery.data.map((commitment) => <CommitmentListItem key={commitment.id} commitment={commitment} />)
+        <>
+          <AttentionSection title="Заблокировано" items={blocked} />
+          <AttentionSection title="Есть риск" items={atRisk} />
+          <AttentionSection title="Требуют проверки" items={checkDue} />
+          <AttentionSection title="На контроле сегодня" items={dueToday} />
+        </>
       )}
 
       <View style={styles.createButton}>
         <Button label="Добавить в контроль" onPress={() => router.push("/commitment/new")} />
       </View>
     </ScrollView>
+  );
+}
+
+function AttentionSection({ title, items }: { title: string; items: Commitment[] }) {
+  if (items.length === 0) return null;
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      {items.map((commitment) => (
+        <CommitmentListItem key={commitment.id} commitment={commitment} />
+      ))}
+    </View>
   );
 }
 
@@ -140,6 +169,9 @@ const styles = StyleSheet.create({
   soonBadge: {
     ...typography.small,
     color: colors.textMuted,
+  },
+  section: {
+    marginBottom: spacing.lg,
   },
   sectionTitle: {
     ...typography.h2,

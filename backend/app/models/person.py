@@ -20,4 +20,9 @@ class Person(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    commitments: Mapped[list["Commitment"]] = relationship(back_populates="owner_person")
+    owned_commitments: Mapped[list["Commitment"]] = relationship(
+        back_populates="owner_person", foreign_keys="Commitment.owner_person_id"
+    )
+    counterparty_commitments: Mapped[list["Commitment"]] = relationship(
+        back_populates="counterparty_person", foreign_keys="Commitment.counterparty_person_id"
+    )

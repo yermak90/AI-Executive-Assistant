@@ -5,7 +5,7 @@ import { Feather } from "@expo/vector-icons";
 import { colors, radius, spacing, typography } from "../theme";
 import { Commitment } from "../types/domain";
 import { formatShortDeadline } from "../utils/date";
-import { StatusBadge } from "./Badge";
+import { ControlHealthBadge, StatusBadge } from "./Badge";
 
 interface CommitmentListItemProps {
   commitment: Commitment;
@@ -34,6 +34,7 @@ export function CommitmentListItem({ commitment }: CommitmentListItemProps) {
       </View>
       <View style={styles.trailing}>
         <StatusBadge status={commitment.status} isOverdue={commitment.is_overdue} />
+        <ControlHealthBadge health={commitment.control_health} />
         <Feather name="chevron-right" size={20} color={colors.textMuted} />
       </View>
     </Pressable>

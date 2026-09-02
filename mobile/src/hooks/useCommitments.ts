@@ -59,3 +59,11 @@ export function useRescheduleCommitment(id: string) {
     onSuccess: () => invalidate(id),
   });
 }
+
+export function useCancelCommitment(id: string) {
+  const invalidate = useInvalidateCommitments();
+  return useMutation({
+    mutationFn: () => commitmentsApi.cancel(id),
+    onSuccess: () => invalidate(id),
+  });
+}

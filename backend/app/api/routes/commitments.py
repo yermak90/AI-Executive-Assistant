@@ -6,11 +6,13 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.models.commitment import CommitmentStatus, Direction
 from app.schemas.commitment import (
+    Bucket,
     CommitmentCreate,
     CommitmentDetail,
     CommitmentHistoryRead,
     CommitmentRead,
     CommitmentUpdate,
+    ControlHealth,
     RescheduleRequest,
 )
 from app.services import commitments as commitments_service
@@ -25,8 +27,9 @@ def list_commitments(
     status: CommitmentStatus | None = None,
     project_id: uuid.UUID | None = None,
     person_id: uuid.UUID | None = None,
-    due: str | None = Query(default=None, description="'today' or 'tomorrow'"),
-    overdue: bool = False,
+    bucket: Bucket | None = Query(default=None, description="overdue|today|tomorrow|later|no_deadline"),
+    control_health: ControlHealth | None = None,
+    archive: bool = False,
     db: Session = Depends(get_db),
 ) -> list[CommitmentRead]:
     filters = CommitmentFilters(
@@ -34,9 +37,9 @@ def list_commitments(
         status=status,
         project_id=project_id,
         person_id=person_id,
-        due_today=(due == "today"),
-        due_tomorrow=(due == "tomorrow"),
-        overdue=overdue,
+        bucket=bucket,
+        control_health=control_health,
+        archive=archive,
     )
     commitments = commitments_service.list_commitments(db, filters)
     return [commitments_service.to_commitment_read(c) for c in commitments]

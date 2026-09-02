@@ -1,31 +1,40 @@
 import { apiClient } from "./client";
-import { Commitment, CommitmentDetail, CommitmentHistoryEntry, Direction, CommitmentStatus } from "../types/domain";
+import { Bucket, Commitment, CommitmentDetail, CommitmentHistoryEntry, ControlHealth, Direction, CommitmentStatus } from "../types/domain";
 
 export interface CommitmentListFilters {
   direction?: Direction;
   status?: CommitmentStatus;
   project_id?: string;
   person_id?: string;
-  due?: "today" | "tomorrow";
-  overdue?: boolean;
+  bucket?: Bucket;
+  control_health?: ControlHealth;
+  archive?: boolean;
 }
 
 export interface CreateCommitmentInput {
   title: string;
   description?: string | null;
   owner_person_id?: string | null;
+  counterparty_person_id?: string | null;
   project_id?: string | null;
   direction: Direction;
   deadline?: string | null;
+  source_text?: string | null;
+  enable_control?: boolean;
+  lead_time_days?: number | null;
+  control_question?: string | null;
+  control_reason?: string | null;
 }
 
 export interface UpdateCommitmentInput {
   title?: string;
   description?: string | null;
   owner_person_id?: string | null;
+  counterparty_person_id?: string | null;
   project_id?: string | null;
   direction?: Direction;
   deadline?: string | null;
+  source_text?: string | null;
 }
 
 function buildQuery(filters: CommitmentListFilters): string {
@@ -34,8 +43,9 @@ function buildQuery(filters: CommitmentListFilters): string {
   if (filters.status) params.set("status", filters.status);
   if (filters.project_id) params.set("project_id", filters.project_id);
   if (filters.person_id) params.set("person_id", filters.person_id);
-  if (filters.due) params.set("due", filters.due);
-  if (filters.overdue) params.set("overdue", "true");
+  if (filters.bucket) params.set("bucket", filters.bucket);
+  if (filters.control_health) params.set("control_health", filters.control_health);
+  if (filters.archive) params.set("archive", "true");
   const query = params.toString();
   return query ? `?${query}` : "";
 }

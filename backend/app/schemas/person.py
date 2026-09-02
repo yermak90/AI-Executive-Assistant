@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.validators import reject_explicit_null
 
 
 class PersonBase(BaseModel):
@@ -16,6 +18,8 @@ class PersonCreate(PersonBase):
 class PersonUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     notes: str | None = None
+
+    _validate_name = field_validator("name")(reject_explicit_null)
 
 
 class PersonRead(PersonBase):

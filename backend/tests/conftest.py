@@ -1,9 +1,10 @@
 import os
 
-os.environ.setdefault(
-    "DATABASE_URL",
+_test_db_url = os.environ.get(
+    "TEST_DATABASE_URL",
     "postgresql+psycopg://postgres:postgres@localhost:5432/ai_executive_assistant_test",
 )
+os.environ["DATABASE_URL"] = _test_db_url
 
 import pytest
 from fastapi.testclient import TestClient

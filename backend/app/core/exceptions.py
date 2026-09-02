@@ -14,3 +14,9 @@ class NotFoundError(AppError):
 
 class ValidationAppError(AppError):
     status_code = 422
+
+
+class ConflictError(AppError):
+    """Invalid state transition or a conflicting operation (HTTP 409)."""
+
+    status_code = 409

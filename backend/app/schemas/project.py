@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.validators import reject_explicit_null
 
 
 class ProjectBase(BaseModel):
@@ -19,6 +21,9 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     is_active: bool | None = None
+
+    _validate_name = field_validator("name")(reject_explicit_null)
+    _validate_is_active = field_validator("is_active")(reject_explicit_null)
 
 
 class ProjectRead(ProjectBase):

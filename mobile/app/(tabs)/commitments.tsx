@@ -1,4 +1,3 @@
-import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 
@@ -8,31 +7,22 @@ import { ErrorState } from "../../src/components/ErrorState";
 import { LoadingState } from "../../src/components/LoadingState";
 import { useCommitmentsQuery } from "../../src/hooks/useCommitments";
 import { colors, radius, spacing, typography } from "../../src/theme";
-import { Direction, DIRECTION_LABELS, DIRECTIONS } from "../../src/types/domain";
+import { BUCKET_LABELS, BUCKETS, Commitment, Direction, DIRECTION_LABELS, DIRECTIONS } from "../../src/types/domain";
 
 export default function CommitmentsControlScreen() {
-  const router = useRouter();
   const [direction, setDirection] = useState<Direction>("OWED_TO_ME");
+  const [showArchive, setShowArchive] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  const filters = { direction, status: "ACTIVE" as const };
-  const todayQuery = useCommitmentsQuery({ ...filters, due: "today" });
-  const overdueQuery = useCommitmentsQuery({ ...filters, overdue: true });
-  const tomorrowQuery = useCommitmentsQuery({ ...filters, due: "tomorrow" });
-
-  const isLoading = todayQuery.isLoading || overdueQuery.isLoading || tomorrowQuery.isLoading;
-  const isError = todayQuery.isError || overdueQuery.isError || tomorrowQuery.isError;
+  const query = useCommitmentsQuery(
+    showArchive ? { direction, archive: true } : { direction, status: "ACTIVE" }
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([todayQuery.refetch(), overdueQuery.refetch(), tomorrowQuery.refetch()]);
+    await query.refetch();
     setRefreshing(false);
   };
-
-  const todayItems = (todayQuery.data ?? []).filter((c) => !c.is_overdue);
-  const overdueItems = overdueQuery.data ?? [];
-  const tomorrowItems = tomorrowQuery.data ?? [];
-  const isEmpty = todayItems.length === 0 && overdueItems.length === 0 && tomorrowItems.length === 0;
 
   return (
     <View style={styles.screen}>
@@ -54,26 +44,45 @@ export default function CommitmentsControlScreen() {
         ))}
       </View>
 
-      {isLoading ? (
+      <View style={styles.segmented}>
+        <Pressable
+          style={[styles.segment, !showArchive && styles.segmentActive]}
+          onPress={() => setShowArchive(false)}
+        >
+          <Text style={[styles.segmentLabel, !showArchive && styles.segmentLabelActive]}>Активные</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.segment, showArchive && styles.segmentActive]}
+          onPress={() => setShowArchive(true)}
+        >
+          <Text style={[styles.segmentLabel, showArchive && styles.segmentLabelActive]}>Архив</Text>
+        </Pressable>
+      </View>
+
+      {query.isLoading ? (
         <LoadingState />
-      ) : isError ? (
+      ) : query.isError || !query.data ? (
         <ErrorState onRetry={onRefresh} />
       ) : (
         <ScrollView
           contentContainerStyle={styles.content}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
         >
-          {isEmpty ? (
+          {query.data.length === 0 ? (
             <EmptyState
-              title="Пока нет обязательств"
-              description={"Добавьте первое обязательство,\nчтобы начать контроль."}
+              title={showArchive ? "В архиве пока пусто" : "Пока нет обязательств"}
+              description={showArchive ? undefined : "Добавьте первое обязательство,\nчтобы начать контроль."}
             />
+          ) : showArchive ? (
+            query.data.map((commitment) => <CommitmentListItem key={commitment.id} commitment={commitment} />)
           ) : (
-            <>
-              <Section title="Просрочено" items={overdueItems} />
-              <Section title="Сегодня" items={todayItems} />
-              <Section title="Завтра" items={tomorrowItems} />
-            </>
+            BUCKETS.map((bucket) => (
+              <Section
+                key={bucket}
+                title={BUCKET_LABELS[bucket]}
+                items={query.data!.filter((c) => c.bucket === bucket)}
+              />
+            ))
           )}
         </ScrollView>
       )}
@@ -81,8 +90,8 @@ export default function CommitmentsControlScreen() {
   );
 }
 
-function Section({ title, items }: { title: string; items: ReturnType<typeof useCommitmentsQuery>["data"] }) {
-  if (!items || items.length === 0) return null;
+function Section({ title, items }: { title: string; items: Commitment[] }) {
+  if (items.length === 0) return null;
   return (
     <View style={styles.section}>
       <Text style={styles.sectionTitle}>{title}</Text>
@@ -131,6 +140,28 @@ const styles = StyleSheet.create({
   },
   tabLabelActive: {
     color: "#fff",
+  },
+  segmented: {
+    flexDirection: "row",
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+    gap: spacing.xs,
+  },
+  segment: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.pill,
+  },
+  segmentActive: {
+    backgroundColor: colors.surfaceElevated,
+  },
+  segmentLabel: {
+    ...typography.caption,
+    color: colors.textMuted,
+  },
+  segmentLabelActive: {
+    color: colors.textPrimary,
+    fontWeight: "600",
   },
   content: {
     paddingHorizontal: spacing.lg,
