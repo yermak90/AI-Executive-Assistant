@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Card } from "../../src/components/Card";
 import { EmptyState } from "../../src/components/EmptyState";
@@ -9,9 +10,11 @@ import { ErrorState } from "../../src/components/ErrorState";
 import { LoadingState } from "../../src/components/LoadingState";
 import { usePeopleQuery } from "../../src/hooks/usePeople";
 import { colors, spacing, typography } from "../../src/theme";
+import { pluralizeActiveCommitments } from "../../src/utils/pluralize";
 
 export default function ContactsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const { data, isLoading, isError, refetch } = usePeopleQuery();
 
@@ -23,7 +26,7 @@ export default function ContactsScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.lg }]}>
         <Text style={styles.title}>Контакты</Text>
         <Pressable style={styles.addButton} onPress={() => router.push("/person/new")}>
           <Feather name="plus" size={22} color={colors.textPrimary} />
@@ -46,7 +49,7 @@ export default function ContactsScreen() {
               <Pressable key={person.id} onPress={() => router.push(`/person/${person.id}`)}>
                 <Card style={styles.card}>
                   <Text style={styles.personName}>{person.name}</Text>
-                  <Text style={styles.stats}>{person.active_commitments_count} активных обязательства</Text>
+                  <Text style={styles.stats}>{pluralizeActiveCommitments(person.active_commitments_count)}</Text>
                 </Card>
               </Pressable>
             ))

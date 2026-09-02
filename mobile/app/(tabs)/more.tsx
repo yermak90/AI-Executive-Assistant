@@ -1,10 +1,12 @@
 import { StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { colors, spacing, typography } from "../../src/theme";
 
 export default function MoreScreen() {
+  const insets = useSafeAreaInsets();
   return (
-    <View style={styles.screen}>
+    <View style={[styles.screen, { paddingTop: insets.top + spacing.xxl }]}>
       <Text style={styles.title}>Еще</Text>
       <Text style={styles.description}>Настройки и дополнительные функции появятся в следующих обновлениях.</Text>
     </View>
@@ -16,7 +18,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
     padding: spacing.lg,
-    paddingTop: spacing.xxl,
   },
   title: {
     ...typography.h1,

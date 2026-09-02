@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { CommitmentListItem } from "../../src/components/CommitmentListItem";
 import { EmptyState } from "../../src/components/EmptyState";
@@ -10,6 +11,7 @@ import { colors, radius, spacing, typography } from "../../src/theme";
 import { BUCKET_LABELS, BUCKETS, Commitment, Direction, DIRECTION_LABELS, DIRECTIONS } from "../../src/types/domain";
 
 export default function CommitmentsControlScreen() {
+  const insets = useSafeAreaInsets();
   const [direction, setDirection] = useState<Direction>("OWED_TO_ME");
   const [showArchive, setShowArchive] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -26,7 +28,7 @@ export default function CommitmentsControlScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.lg }]}>
         <Text style={styles.title}>Контроль обязательств</Text>
       </View>
 

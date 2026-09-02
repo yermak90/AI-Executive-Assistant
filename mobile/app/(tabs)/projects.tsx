@@ -2,6 +2,7 @@ import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Card } from "../../src/components/Card";
 import { EmptyState } from "../../src/components/EmptyState";
@@ -9,9 +10,11 @@ import { ErrorState } from "../../src/components/ErrorState";
 import { LoadingState } from "../../src/components/LoadingState";
 import { useProjectsQuery } from "../../src/hooks/useProjects";
 import { colors, spacing, typography } from "../../src/theme";
+import { pluralizeActiveCommitments } from "../../src/utils/pluralize";
 
 export default function ProjectsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
   const { data, isLoading, isError, refetch } = useProjectsQuery();
 
@@ -23,7 +26,7 @@ export default function ProjectsScreen() {
 
   return (
     <View style={styles.screen}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + spacing.lg }]}>
         <Text style={styles.title}>Проекты</Text>
         <Pressable style={styles.addButton} onPress={() => router.push("/project/new")}>
           <Feather name="plus" size={22} color={colors.textPrimary} />
@@ -47,7 +50,7 @@ export default function ProjectsScreen() {
                 <Card style={styles.card}>
                   <Text style={styles.projectName}>{project.name}</Text>
                   <Text style={styles.stats}>
-                    {project.active_commitments_count} активных обязательств
+                    {pluralizeActiveCommitments(project.active_commitments_count)}
                     {project.overdue_commitments_count > 0
                       ? ` · ${project.overdue_commitments_count} просрочено`
                       : ""}
