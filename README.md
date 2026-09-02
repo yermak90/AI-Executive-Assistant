@@ -269,9 +269,20 @@ All steps pass. ✅
   Expo web + a headless browser (see "Visual / UI testing"). The native
   date/time picker's actual on-device UI, gesture handling, and safe-area
   behavior on a real notch/status bar are unverified.
-- **GitHub Actions has not been observed running.** The workflow in
-  `.github/workflows/ci.yml` mirrors every command verified locally
-  (`alembic upgrade/downgrade/upgrade`, `pytest`, `npm ci`, `npm run
-  typecheck`, `expo-doctor`, `expo export --platform android`), but whether
-  it is actually green on GitHub's runners should be checked after pushing,
-  not assumed from local success alone.
+- **GitHub Actions: confirmed green**, not just assumed from local success —
+  and it's a good thing this was checked rather than assumed. The first push
+  (commit `8e851ed`) actually went red on real runners: `expo-doctor`'s
+  "packages match versions required by installed Expo SDK" check failed
+  because npm had resolved `@react-native-community/datetimepicker` /
+  `react-native-safe-area-context` / `react-native-screens` a minor version
+  ahead of what SDK 57 expects. The same check against the exact same
+  lockfile had reported no problem in every local run in this sandbox
+  (including immediately before that push) — this check most likely also
+  depends on fetching an up-to-date version manifest and fails silently
+  open when that network call is blocked, rather than failing loudly like
+  the two doctor checks already listed above as sandbox-blocked, though
+  this wasn't independently proven. Practical takeaway: **`expo-doctor`
+  passing in this sandbox is not sufficient evidence it will pass in real
+  CI** — pinned the three packages to the exact versions `expo-doctor`
+  reported as expected once the real CI log named them; the next run
+  (`8524647`) is green on both jobs, verified via the Actions API.
