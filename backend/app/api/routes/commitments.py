@@ -14,6 +14,7 @@ from app.schemas.commitment import (
     CommitmentUpdate,
     ControlHealth,
     RescheduleRequest,
+    RescheduleResponse,
 )
 from app.services import commitments as commitments_service
 from app.services.commitments import CommitmentFilters
@@ -71,12 +72,18 @@ def complete_commitment(commitment_id: uuid.UUID, db: Session = Depends(get_db))
     return commitments_service.to_commitment_detail(commitment)
 
 
-@router.post("/{commitment_id}/reschedule", response_model=CommitmentDetail)
+@router.post("/{commitment_id}/reschedule", response_model=RescheduleResponse)
 def reschedule_commitment(
     commitment_id: uuid.UUID, data: RescheduleRequest, db: Session = Depends(get_db)
-) -> CommitmentDetail:
-    commitment = commitments_service.reschedule_commitment(db, commitment_id, data.deadline)
-    return commitments_service.to_commitment_detail(commitment)
+) -> RescheduleResponse:
+    commitment, immediate_attention, manual_after = commitments_service.reschedule_commitment(
+        db, commitment_id, data.deadline
+    )
+    return RescheduleResponse(
+        commitment=commitments_service.to_commitment_detail(commitment),
+        immediate_attention_required=immediate_attention,
+        manual_checkpoints_after_deadline=list(manual_after),
+    )
 
 
 @router.post("/{commitment_id}/cancel", response_model=CommitmentDetail)

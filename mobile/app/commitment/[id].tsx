@@ -2,11 +2,12 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
-import { AddCheckpointModal } from "../../src/components/AddCheckpointModal";
 import { Button } from "../../src/components/Button";
 import { Card } from "../../src/components/Card";
 import { CheckpointAssessModal } from "../../src/components/CheckpointAssessModal";
+import { CheckpointFormModal, CheckpointFormValues } from "../../src/components/CheckpointFormModal";
 import { CheckpointRow } from "../../src/components/CheckpointRow";
+import { ControlSettingsCard } from "../../src/components/ControlSettingsCard";
 import { DeadlinePicker } from "../../src/components/DeadlinePicker";
 import { ErrorState } from "../../src/components/ErrorState";
 import { LoadingState } from "../../src/components/LoadingState";
@@ -18,10 +19,16 @@ import {
   useCompleteCommitment,
   useRescheduleCommitment,
 } from "../../src/hooks/useCommitments";
-import { useAssessCheckpoint, useCreateCheckpoint, useSkipCheckpoint } from "../../src/hooks/useCheckpoints";
+import {
+  useAssessCheckpoint,
+  useCreateCheckpoint,
+  useDeleteCheckpoint,
+  useSkipCheckpoint,
+  useUpdateCheckpoint,
+} from "../../src/hooks/useCheckpoints";
 import { colors, radius, spacing, typography } from "../../src/theme";
 import { formatDateTime, formatDeadline } from "../../src/utils/date";
-import { Checkpoint, HistoryEventType } from "../../src/types/domain";
+import { Checkpoint, CommitmentHistoryEntry, Direction, DIRECTION_LABELS, HistoryEventType } from "../../src/types/domain";
 
 const HISTORY_LABELS: Record<HistoryEventType, string> = {
   CREATED: "Создано обязательство",
@@ -40,38 +47,81 @@ const HISTORY_LABELS: Record<HistoryEventType, string> = {
   CHECKPOINT_AUTO_RECALCULATED: "Контрольная точка пересчитана",
 };
 
-function formatHistoryDetail(oldValue: Record<string, unknown> | null, newValue: Record<string, unknown> | null): string | null {
-  const value = newValue ?? oldValue;
-  if (!value) return null;
+const FIELD_LABELS: Record<string, string> = {
+  title: "Задача",
+  description: "Описание",
+  direction: "Направление",
+  owner_person_id: "Ответственный",
+  counterparty_person_id: "Контрагент",
+  project_id: "Проект",
+  lead_time_days: "Контроль (дней до срока)",
+  deadline: "Срок",
+};
 
-  // `oldValue === null` means this is a creation snapshot, not an actual
-  // transition — show the value on its own rather than "без срока → X".
-  const isCreationSnapshot = oldValue === null;
+function formatFieldValue(field: string, value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (field === "direction" && typeof value === "string") {
+    return DIRECTION_LABELS[value as Direction] ?? value;
+  }
+  return String(value);
+}
 
-  if (typeof value.deadline === "string" || (isCreationSnapshot && "deadline" in value)) {
-    const newDeadline = newValue?.deadline;
+/** P1-9: every field an UPDATED event can carry gets its own readable
+ * "Label: old → new" line (or just "Label: value" for the CREATED
+ * snapshot, which has no real "old"). Person/project fields already arrive
+ * as resolved names from the backend, not raw IDs. */
+function formatHistoryDetailLines(entry: CommitmentHistoryEntry): string[] {
+  const { event_type, old_value, new_value } = entry;
+  const isCreationSnapshot = old_value === null;
+
+  if (event_type === "DEADLINE_CHANGED") {
+    const newDeadline = new_value?.deadline;
     const newText = typeof newDeadline === "string" ? formatDateTime(newDeadline) : "без срока";
-    if (isCreationSnapshot) return `Срок: ${newText}`;
-    const oldDeadline = oldValue?.deadline;
+    const oldDeadline = old_value?.deadline;
     const oldText = typeof oldDeadline === "string" ? formatDateTime(oldDeadline) : "без срока";
-    return `${oldText} → ${newText}`;
+    return [`${oldText} → ${newText}`];
   }
-  if (typeof value.scheduled_at === "string") {
-    const oldAt = oldValue?.scheduled_at;
-    const newAt = newValue?.scheduled_at;
-    if (typeof oldAt === "string" && typeof newAt === "string") {
-      return `${formatDateTime(oldAt)} → ${formatDateTime(newAt)}`;
+
+  if (event_type.startsWith("CHECKPOINT_")) {
+    const value = new_value ?? old_value;
+    if (!value) return [];
+    if (typeof value.scheduled_at === "string") {
+      const oldAt = old_value?.scheduled_at;
+      const newAt = new_value?.scheduled_at;
+      if (typeof oldAt === "string" && typeof newAt === "string") {
+        return [`${formatDateTime(oldAt)} → ${formatDateTime(newAt)}`];
+      }
+      return isCreationSnapshot ? [] : [formatDateTime(value.scheduled_at as string)];
     }
-    if (isCreationSnapshot) return null; // just a "created" timestamp echo, redundant with the row's own date
-    return formatDateTime(value.scheduled_at as string);
+    if (typeof value.assessment_note === "string" && value.assessment_note) {
+      return [value.assessment_note as string];
+    }
+    return [];
   }
-  if (typeof value.title === "string" && Object.keys(value).length === 1) {
-    return value.title as string;
+
+  if (event_type === "CREATED" || event_type === "UPDATED") {
+    // Both are per-field snapshots/diffs (CREATED just has no "old" side —
+    // every field it carries is rendered as "Label: value" instead of a
+    // transition). This is also where title/direction/deadline for a brand
+    // new commitment get spelled out, not just a bare "Создано обязательство".
+    const value = new_value ?? old_value;
+    if (!value) return [];
+    return Object.keys(value).map((field) => {
+      const label = FIELD_LABELS[field] ?? field;
+      const rawNew = new_value?.[field];
+      const newText =
+        field === "deadline"
+          ? typeof rawNew === "string"
+            ? formatDateTime(rawNew)
+            : "без срока"
+          : formatFieldValue(field, rawNew);
+      if (isCreationSnapshot) return `${label}: ${newText}`;
+      const oldText = formatFieldValue(field, old_value?.[field]);
+      return `${label}: ${oldText} → ${newText}`;
+    });
   }
-  if (typeof value.assessment_note === "string" && value.assessment_note) {
-    return value.assessment_note as string;
-  }
-  return null;
+
+  return [];
 }
 
 export default function CommitmentDetailScreen() {
@@ -81,12 +131,15 @@ export default function CommitmentDetailScreen() {
   const [pendingDeadline, setPendingDeadline] = useState<string | null>(null);
   const [assessingCheckpoint, setAssessingCheckpoint] = useState<Checkpoint | null>(null);
   const [addCheckpointOpen, setAddCheckpointOpen] = useState(false);
+  const [editingCheckpoint, setEditingCheckpoint] = useState<Checkpoint | null>(null);
 
   const { data: commitment, isLoading, isError, refetch } = useCommitmentQuery(id);
   const completeMutation = useCompleteCommitment(id);
   const cancelMutation = useCancelCommitment(id);
   const rescheduleMutation = useRescheduleCommitment(id);
   const createCheckpointMutation = useCreateCheckpoint(id);
+  const updateCheckpointMutation = useUpdateCheckpoint(id);
+  const deleteCheckpointMutation = useDeleteCheckpoint(id);
   const assessMutation = useAssessCheckpoint(id);
   const skipMutation = useSkipCheckpoint(id);
 
@@ -125,9 +178,38 @@ export default function CommitmentDetailScreen() {
 
   const confirmReschedule = () => {
     rescheduleMutation.mutate(pendingDeadline, {
-      onSuccess: () => setRescheduleOpen(false),
+      onSuccess: (result) => {
+        setRescheduleOpen(false);
+        if (result.manual_checkpoints_after_deadline.length > 0) {
+          const titles = result.manual_checkpoints_after_deadline.map((cp) => `• ${cp.title}`).join("\n");
+          Alert.alert(
+            "Контрольные точки после нового срока",
+            `Эти контрольные точки не были перенесены и теперь позже нового срока:\n${titles}`
+          );
+        } else if (result.immediate_attention_required) {
+          Alert.alert(
+            "Требуется внимание сейчас",
+            "Пересчитанная контрольная точка попадает на момент создания обязательства — вмешайтесь как можно скорее."
+          );
+        }
+      },
       onError: (e: any) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : e.message),
     });
+  };
+
+  const handleDeleteCheckpoint = (checkpoint: Checkpoint) => {
+    Alert.alert("Удалить контрольную точку?", checkpoint.title, [
+      { text: "Отмена", style: "cancel" },
+      {
+        text: "Удалить",
+        style: "destructive",
+        onPress: () =>
+          deleteCheckpointMutation.mutate(checkpoint.id, {
+            onSuccess: () => setAssessingCheckpoint(null),
+            onError: (e: any) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : e.message),
+          }),
+      },
+    ]);
   };
 
   return (
@@ -162,6 +244,17 @@ export default function CommitmentDetailScreen() {
         </Field>
       </Card>
 
+      {isActive ? (
+        <>
+          <Text style={styles.sectionTitle}>Настроить контроль</Text>
+          <ControlSettingsCard
+            commitmentId={commitment.id}
+            leadTimeDays={commitment.lead_time_days}
+            hasDeadline={commitment.deadline !== null}
+          />
+        </>
+      ) : null}
+
       <View style={styles.timelineHeader}>
         <Text style={styles.sectionTitle}>Контрольные точки</Text>
         {isActive ? (
@@ -183,11 +276,15 @@ export default function CommitmentDetailScreen() {
       <Text style={styles.sectionTitle}>История</Text>
       <Card style={styles.historyCard}>
         {commitment.history.map((entry, index) => {
-          const detail = formatHistoryDetail(entry.old_value, entry.new_value);
+          const detailLines = formatHistoryDetailLines(entry);
           return (
             <View key={entry.id} style={[styles.historyRow, index === commitment.history.length - 1 && styles.last]}>
               <Text style={styles.historyLabel}>{HISTORY_LABELS[entry.event_type]}</Text>
-              {detail ? <Text style={styles.historyDetail}>{detail}</Text> : null}
+              {detailLines.map((line, lineIndex) => (
+                <Text key={lineIndex} style={styles.historyDetail}>
+                  {line}
+                </Text>
+              ))}
               <Text style={styles.historyDate}>{formatDateTime(entry.created_at)}</Text>
             </View>
           );
@@ -220,15 +317,31 @@ export default function CommitmentDetailScreen() {
         </Pressable>
       </Modal>
 
-      <AddCheckpointModal
+      <CheckpointFormModal
         visible={addCheckpointOpen}
+        mode="create"
         onClose={() => setAddCheckpointOpen(false)}
         loading={createCheckpointMutation.isPending}
-        onCreate={(title, scheduledAt) =>
-          createCheckpointMutation.mutate(
-            { title, scheduled_at: scheduledAt },
+        onSubmit={(values: CheckpointFormValues) =>
+          createCheckpointMutation.mutate(values, {
+            onSuccess: () => setAddCheckpointOpen(false),
+            onError: (e: any) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : e.message),
+          })
+        }
+      />
+
+      <CheckpointFormModal
+        visible={editingCheckpoint !== null}
+        mode="edit"
+        initial={editingCheckpoint}
+        onClose={() => setEditingCheckpoint(null)}
+        loading={updateCheckpointMutation.isPending}
+        onSubmit={(values: CheckpointFormValues) =>
+          editingCheckpoint &&
+          updateCheckpointMutation.mutate(
+            { checkpointId: editingCheckpoint.id, data: values },
             {
-              onSuccess: () => setAddCheckpointOpen(false),
+              onSuccess: () => setEditingCheckpoint(null),
               onError: (e: any) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : e.message),
             }
           )
@@ -237,7 +350,7 @@ export default function CommitmentDetailScreen() {
 
       <CheckpointAssessModal
         checkpoint={assessingCheckpoint}
-        loading={assessMutation.isPending || skipMutation.isPending}
+        loading={assessMutation.isPending || skipMutation.isPending || deleteCheckpointMutation.isPending}
         onClose={() => setAssessingCheckpoint(null)}
         onAssess={(assessment, note) =>
           assessingCheckpoint &&
@@ -256,6 +369,12 @@ export default function CommitmentDetailScreen() {
             onError: (e: any) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : e.message),
           })
         }
+        onEdit={() => {
+          if (!assessingCheckpoint) return;
+          setEditingCheckpoint(assessingCheckpoint);
+          setAssessingCheckpoint(null);
+        }}
+        onDelete={() => assessingCheckpoint && handleDeleteCheckpoint(assessingCheckpoint)}
       />
     </ScrollView>
   );

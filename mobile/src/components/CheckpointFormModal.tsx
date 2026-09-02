@@ -1,40 +1,81 @@
 import DateTimePicker from "@react-native-community/datetimepicker";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, radius, spacing, typography } from "../theme";
+import { Checkpoint } from "../types/domain";
 import { formatDateTime } from "../utils/date";
 import { Button } from "./Button";
 import { TextField } from "./TextField";
 
-interface AddCheckpointModalProps {
+export interface CheckpointFormValues {
+  title: string;
+  question: string | null;
+  reason: string | null;
+  scheduled_at: string;
+}
+
+interface CheckpointFormModalProps {
   visible: boolean;
+  mode: "create" | "edit";
+  initial?: Checkpoint | null;
   onClose: () => void;
-  onCreate: (title: string, scheduledAt: string) => void;
+  onSubmit: (values: CheckpointFormValues) => void;
   loading?: boolean;
 }
 
-export function AddCheckpointModal({ visible, onClose, onCreate, loading }: AddCheckpointModalProps) {
+/** P1-05: shared create/edit form for checkpoints — title, question, reason,
+ * and scheduled_at, matching the fields CheckpointCreate/CheckpointUpdate
+ * accept on the backend. */
+export function CheckpointFormModal({ visible, mode, initial, onClose, onSubmit, loading }: CheckpointFormModalProps) {
   const [title, setTitle] = useState("");
+  const [question, setQuestion] = useState("");
+  const [reason, setReason] = useState("");
   const [date, setDate] = useState(() => new Date(Date.now() + 24 * 60 * 60 * 1000));
   const [activePicker, setActivePicker] = useState<"date" | "time" | "datetime" | null>(null);
 
+  useEffect(() => {
+    if (!visible) return;
+    setTitle(initial?.title ?? "");
+    setQuestion(initial?.question ?? "");
+    setReason(initial?.reason ?? "");
+    setDate(initial ? new Date(initial.scheduled_at) : new Date(Date.now() + 24 * 60 * 60 * 1000));
+  }, [visible, initial]);
+
   const close = () => {
-    setTitle("");
     onClose();
   };
 
   const submit = () => {
     if (!title.trim()) return;
-    onCreate(title.trim(), date.toISOString());
+    onSubmit({
+      title: title.trim(),
+      question: question.trim() || null,
+      reason: reason.trim() || null,
+      scheduled_at: date.toISOString(),
+    });
   };
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={close}>
       <Pressable style={styles.backdrop} onPress={close}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.title}>Новая контрольная точка</Text>
+          <Text style={styles.title}>
+            {mode === "edit" ? "Редактировать контрольную точку" : "Новая контрольная точка"}
+          </Text>
           <TextField label="Что проверить" value={title} onChangeText={setTitle} placeholder="Например, заказ материалов" />
+          <TextField
+            label="Вопрос для проверки (необязательно)"
+            value={question}
+            onChangeText={setQuestion}
+            placeholder="Например, материалы заказаны?"
+          />
+          <TextField
+            label="Почему важно проверить (необязательно)"
+            value={reason}
+            onChangeText={setReason}
+            placeholder="Например, влияет на сроки поставки"
+          />
 
           <Text style={styles.label}>Когда проверить</Text>
           <Pressable
@@ -68,7 +109,7 @@ export function AddCheckpointModal({ visible, onClose, onCreate, loading }: AddC
           ) : null}
 
           <View style={styles.submitSpacer} />
-          <Button label="Добавить" onPress={submit} disabled={!title.trim()} loading={loading} />
+          <Button label={mode === "edit" ? "Сохранить" : "Добавить"} onPress={submit} disabled={!title.trim()} loading={loading} />
         </Pressable>
       </Pressable>
     </Modal>

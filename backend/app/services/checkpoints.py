@@ -16,9 +16,16 @@ from app.models.commitment_checkpoint import (
 from app.models.commitment_history import CommitmentHistory, HistoryEventType
 from app.schemas.checkpoint import CheckpointAssessRequest, CheckpointCreate, CheckpointUpdate
 from app.schemas.commitment import ControlHealth
+from app.services.checkpoint_suggestions import CheckpointSuggestionProvider, RuleBasedCheckpointSuggestionProvider
 
 REASON_COMPLETED = "Обязательство выполнено"
 REASON_CANCELLED = "Обязательство отменено"
+
+# P1-11 / Sprint-2 compatibility: the only place that picks which
+# CheckpointSuggestionProvider drafts auto-generated checkpoint text. Sprint
+# 1 always uses the rule-based provider; a future LLM-backed provider would
+# be swapped in here without touching generate_auto_checkpoints itself.
+_suggestion_provider: CheckpointSuggestionProvider = RuleBasedCheckpointSuggestionProvider()
 
 _ASSESSMENT_EVENT: dict[CheckpointAssessment, HistoryEventType] = {
     CheckpointAssessment.ON_TRACK: HistoryEventType.CHECKPOINT_ASSESSED_ON_TRACK,
@@ -199,23 +206,6 @@ def assess_checkpoint(
 # --- Rule-based generation (FR-015 / FR-016 / FR-017) -----------------------
 
 
-def _default_template(commitment: Commitment, scheduled_at: datetime, reference_time: datetime) -> dict:
-    remaining = commitment.deadline - reference_time if commitment.deadline else None
-    remaining_text = _format_remaining(remaining) if remaining else "неизвестно"
-    return {
-        "title": f"Проверить готовность: {commitment.title}",
-        "question": "Всё ли готово для выполнения обязательства в срок?",
-        "reason": f"До конечного срока осталось {remaining_text}. Если есть препятствия, необходимо вмешаться сейчас.",
-    }
-
-
-def _format_remaining(remaining: timedelta) -> str:
-    total_hours = remaining.total_seconds() / 3600
-    if total_hours < 48:
-        return f"{max(1, round(total_hours))} ч."
-    return f"{max(1, round(total_hours / 24))} дн."
-
-
 def _default_rule_schedule(deadline: datetime, reference_time: datetime, created_at: datetime) -> list[datetime]:
     remaining = deadline - reference_time
     if remaining <= timedelta(hours=24):
@@ -251,18 +241,29 @@ def generate_auto_checkpoints(
     created: list[CommitmentCheckpoint] = []
     immediate_attention = False
 
-    for scheduled_at in scheduled_times:
-        if scheduled_at < commitment.created_at or scheduled_at >= commitment.deadline:
+    for computed_at in scheduled_times:
+        if computed_at >= commitment.deadline:
             continue
+
+        scheduled_at = computed_at
+        if computed_at < commitment.created_at:
+            # FR-016 / P0-04: the rule-recommended date is earlier than the
+            # commitment even existed — clamp it to created_at rather than
+            # silently dropping the checkpoint, so the signal survives as a
+            # real PENDING row (and therefore CHECK_DUE control health)
+            # instead of only a one-off flag in this response.
+            scheduled_at = commitment.created_at
+            immediate_attention = True
+
         if _has_duplicate(commitment, scheduled_at):
             continue
 
-        template = _default_template(commitment, scheduled_at, reference_time)
+        suggestion = _suggestion_provider.suggest(commitment, scheduled_at, reference_time)
         checkpoint = CommitmentCheckpoint(
             commitment_id=commitment.id,
-            title=template["title"],
-            question=template["question"],
-            reason=template["reason"],
+            title=suggestion.title,
+            question=suggestion.question,
+            reason=suggestion.reason,
             scheduled_at=scheduled_at,
             source_type=CheckpointSourceType.AUTO_RULE,
         )
@@ -285,13 +286,21 @@ def generate_auto_checkpoints(
 
 def recalculate_auto_checkpoints(
     db: Session, commitment: Commitment, old_deadline: datetime | None, new_deadline: datetime | None
-) -> None:
+) -> bool:
     """FR-020: shift each still-pending AUTO_RULE checkpoint by the same gap
     it originally held relative to the old deadline, so a lead time of "2
     days before" stays "2 days before" the new deadline. MANUAL checkpoints
-    and already COMPLETED/SKIPPED ones are left untouched."""
+    and already COMPLETED/SKIPPED ones are left untouched.
+
+    Returns immediate_attention_required (P0-04/P1-08): shifting a
+    checkpoint to before the commitment's created_at (e.g. a reschedule to a
+    much closer deadline) must clamp it to created_at rather than create an
+    AUTO_RULE checkpoint that predates the commitment, and that clamp must
+    surface as an immediate-attention signal rather than disappear silently."""
     if old_deadline is None or new_deadline is None:
-        return
+        return False
+
+    immediate_attention = False
 
     for checkpoint in commitment.checkpoints:
         if checkpoint.status != CheckpointStatus.PENDING or checkpoint.source_type != CheckpointSourceType.AUTO_RULE:
@@ -299,6 +308,10 @@ def recalculate_auto_checkpoints(
 
         gap = old_deadline - checkpoint.scheduled_at
         new_scheduled_at = new_deadline - gap
+        if new_scheduled_at < commitment.created_at:
+            new_scheduled_at = commitment.created_at
+            immediate_attention = True
+
         old_scheduled_at = checkpoint.scheduled_at
         checkpoint.scheduled_at = new_scheduled_at
         _add_history(
@@ -308,6 +321,23 @@ def recalculate_auto_checkpoints(
             {"scheduled_at": old_scheduled_at.isoformat()},
             {"scheduled_at": new_scheduled_at.isoformat()},
         )
+
+    return immediate_attention
+
+
+def manual_checkpoints_after(commitment: Commitment, deadline: datetime | None) -> list[CommitmentCheckpoint]:
+    """P1-08: MANUAL checkpoints are never moved by a reschedule, so a new,
+    earlier deadline can leave one scheduled after the deadline it is meant
+    to check on. Surface those instead of leaving the mismatch silent."""
+    if deadline is None:
+        return []
+    return [
+        cp
+        for cp in commitment.checkpoints
+        if cp.status == CheckpointStatus.PENDING
+        and cp.source_type == CheckpointSourceType.MANUAL
+        and cp.scheduled_at > deadline
+    ]
 
 
 # --- Control health (FR-019) -------------------------------------------

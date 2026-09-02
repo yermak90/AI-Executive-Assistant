@@ -26,10 +26,11 @@ export function useGenerateCheckpoints(commitmentId: string) {
   });
 }
 
-export function useUpdateCheckpoint(commitmentId: string, checkpointId: string) {
+export function useUpdateCheckpoint(commitmentId: string) {
   const invalidate = useInvalidateCommitment(commitmentId);
   return useMutation({
-    mutationFn: (data: UpdateCheckpointInput) => checkpointsApi.update(checkpointId, data),
+    mutationFn: ({ checkpointId, data }: { checkpointId: string; data: UpdateCheckpointInput }) =>
+      checkpointsApi.update(checkpointId, data),
     onSuccess: invalidate,
   });
 }

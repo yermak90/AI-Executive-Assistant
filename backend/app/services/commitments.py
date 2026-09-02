@@ -9,6 +9,7 @@ from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
 from app.core.timezone import is_same_local_date
 from app.core.timezone import now as tz_now
 from app.models.commitment import Commitment, CommitmentStatus, Direction
+from app.models.commitment_checkpoint import CommitmentCheckpoint
 from app.models.commitment_history import CommitmentHistory, HistoryEventType
 from app.models.person import Person
 from app.models.project import Project
@@ -30,7 +31,16 @@ FINAL_STATUSES = (CommitmentStatus.COMPLETED, CommitmentStatus.CANCELLED)
 
 # Fields whose changes on a general PATCH are worth recording as history,
 # and how to render each value for the history payload.
-_TRACKED_FIELDS = ("title", "description", "direction", "owner_person_id", "counterparty_person_id", "project_id")
+_TRACKED_FIELDS = (
+    "title",
+    "description",
+    "direction",
+    "owner_person_id",
+    "counterparty_person_id",
+    "project_id",
+    "lead_time_days",
+)
+_PERSON_FIELDS = ("owner_person_id", "counterparty_person_id")
 
 
 @dataclass
@@ -166,6 +176,31 @@ def list_commitments(db: Session, filters: CommitmentFilters) -> list[Commitment
     return commitments
 
 
+def _resolve_direction_ownership(commitment: Commitment, updates: dict) -> None:
+    """PRD 10.4: OWED_TO_ME and TEAM require owner_person_id; I_OWE requires
+    owner_person_id = null. A PATCH only carries the fields the client
+    actually sent, so the invariant must be checked against the *resolved*
+    state (existing values merged with the incoming patch), not against
+    `updates` in isolation — otherwise e.g. `{"direction": "I_OWE"}` alone
+    would sail through with a stale owner_person_id still on the row.
+
+    Mutates `updates` in place: when direction changes to I_OWE without the
+    client also clearing owner_person_id, the now-incompatible hidden field
+    is cleared automatically rather than rejecting the whole request.
+    """
+    owner_given = "owner_person_id" in updates
+    resolved_direction = updates.get("direction", commitment.direction)
+    resolved_owner = updates["owner_person_id"] if owner_given else commitment.owner_person_id
+
+    if resolved_direction == Direction.I_OWE:
+        if owner_given and resolved_owner is not None:
+            raise ValidationAppError("owner_person_id must be omitted or null for direction I_OWE")
+        if not owner_given and resolved_owner is not None:
+            updates["owner_person_id"] = None
+    elif resolved_owner is None:
+        raise ValidationAppError(f"owner_person_id is required for direction {resolved_direction.value}")
+
+
 def create_commitment(db: Session, data: CommitmentCreate) -> Commitment:
     if data.owner_person_id is not None:
         _get_person_or_raise(db, data.owner_person_id)
@@ -219,11 +254,22 @@ def create_commitment(db: Session, data: CommitmentCreate) -> Commitment:
     return get_commitment_or_raise(db, commitment.id)
 
 
-def _render_field(field: str, value) -> object:
+def _render_field(db: Session, field: str, value) -> object:
+    """Render a field's value for a history entry. Person/project foreign
+    keys are resolved to their current name (not left as a bare UUID) so
+    the history reads as "Аян → Руслан" rather than two GUIDs — this is
+    captured at the moment of the change, which is also correct audit-log
+    behaviour if that person or project is later renamed."""
     if value is None:
         return None
     if hasattr(value, "value"):  # enum
         return value.value
+    if field in _PERSON_FIELDS:
+        person = db.get(Person, value)
+        return person.name if person else str(value)
+    if field == "project_id":
+        project = db.get(Project, value)
+        return project.name if project else str(value)
     return str(value)
 
 
@@ -231,6 +277,8 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
     commitment = get_commitment_or_raise(db, commitment_id)
     _require_active(commitment, "edit")
     updates = data.model_dump(exclude_unset=True)
+
+    _resolve_direction_ownership(commitment, updates)
 
     if "owner_person_id" in updates and updates["owner_person_id"] is not None:
         _get_person_or_raise(db, updates["owner_person_id"])
@@ -264,8 +312,8 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
         old_value = getattr(commitment, field)
         if new_value == old_value:
             continue
-        changed_old[field] = _render_field(field, old_value)
-        changed_new[field] = _render_field(field, new_value)
+        changed_old[field] = _render_field(db, field, old_value)
+        changed_new[field] = _render_field(db, field, new_value)
         setattr(commitment, field, new_value)
 
     if "source_text" in updates and updates["source_text"] != commitment.source_text:
@@ -285,7 +333,10 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
     return get_commitment_or_raise(db, commitment.id)
 
 
-def reschedule_commitment(db: Session, commitment_id: uuid.UUID, new_deadline: datetime | None) -> Commitment:
+def reschedule_commitment(
+    db: Session, commitment_id: uuid.UUID, new_deadline: datetime | None
+) -> tuple[Commitment, bool, list[CommitmentCheckpoint]]:
+    """Returns (commitment, immediate_attention_required, manual_checkpoints_after_deadline)."""
     commitment = get_commitment_or_raise(db, commitment_id)
     _require_active(commitment, "reschedule")
     old_deadline = commitment.deadline
@@ -299,9 +350,10 @@ def reschedule_commitment(db: Session, commitment_id: uuid.UUID, new_deadline: d
             new_value={"deadline": new_deadline.isoformat() if new_deadline else None},
         )
     )
-    checkpoints_service.recalculate_auto_checkpoints(db, commitment, old_deadline, new_deadline)
+    immediate_attention = checkpoints_service.recalculate_auto_checkpoints(db, commitment, old_deadline, new_deadline)
+    manual_after = checkpoints_service.manual_checkpoints_after(commitment, new_deadline)
     db.commit()
-    return get_commitment_or_raise(db, commitment.id)
+    return get_commitment_or_raise(db, commitment.id), immediate_attention, manual_after
 
 
 def complete_commitment(db: Session, commitment_id: uuid.UUID) -> Commitment:

@@ -10,6 +10,8 @@ interface CheckpointAssessModalProps {
   onClose: () => void;
   onAssess: (assessment: "ON_TRACK" | "AT_RISK" | "BLOCKED", note: string | null) => void;
   onSkip: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
   loading?: boolean;
 }
 
@@ -19,7 +21,15 @@ const OPTIONS: { value: "ON_TRACK" | "AT_RISK" | "BLOCKED"; label: string; color
   { value: "BLOCKED", label: "Заблокировано", color: colors.danger },
 ];
 
-export function CheckpointAssessModal({ checkpoint, onClose, onAssess, onSkip, loading }: CheckpointAssessModalProps) {
+export function CheckpointAssessModal({
+  checkpoint,
+  onClose,
+  onAssess,
+  onSkip,
+  onEdit,
+  onDelete,
+  loading,
+}: CheckpointAssessModalProps) {
   const [selected, setSelected] = useState<"ON_TRACK" | "AT_RISK" | "BLOCKED" | null>(null);
   const [note, setNote] = useState("");
 
@@ -33,8 +43,19 @@ export function CheckpointAssessModal({ checkpoint, onClose, onAssess, onSkip, l
     <Modal visible={checkpoint !== null} transparent animationType="slide" onRequestClose={close}>
       <Pressable style={styles.backdrop} onPress={close}>
         <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-          <Text style={styles.title}>{checkpoint?.title}</Text>
+          <View style={styles.headerRow}>
+            <Text style={styles.title}>{checkpoint?.title}</Text>
+            <View style={styles.headerActions}>
+              <Pressable onPress={onEdit} hitSlop={8}>
+                <Text style={styles.headerAction}>Изменить</Text>
+              </Pressable>
+              <Pressable onPress={onDelete} hitSlop={8}>
+                <Text style={[styles.headerAction, styles.headerActionDanger]}>Удалить</Text>
+              </Pressable>
+            </View>
+          </View>
           <Text style={styles.question}>{checkpoint?.question ?? "Оцените состояние обязательства"}</Text>
+          {checkpoint?.reason ? <Text style={styles.reason}>{checkpoint.reason}</Text> : null}
 
           <View style={styles.options}>
             {OPTIONS.map((option) => (
@@ -85,12 +106,35 @@ const styles = StyleSheet.create({
     borderTopRightRadius: radius.lg,
     padding: spacing.lg,
   },
+  headerRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: spacing.xs,
+  },
   title: {
     ...typography.title,
-    marginBottom: spacing.xs,
+    flexShrink: 1,
+  },
+  headerActions: {
+    flexDirection: "row",
+    gap: spacing.md,
+  },
+  headerAction: {
+    ...typography.caption,
+    color: colors.primary,
+    fontWeight: "600",
+  },
+  headerActionDanger: {
+    color: colors.danger,
   },
   question: {
     ...typography.caption,
+    marginBottom: spacing.xs,
+  },
+  reason: {
+    ...typography.caption,
+    fontStyle: "italic",
     marginBottom: spacing.lg,
   },
   options: {

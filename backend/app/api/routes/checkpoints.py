@@ -9,6 +9,7 @@ from app.schemas.checkpoint import (
     CheckpointAssessRequest,
     CheckpointCreate,
     CheckpointGenerateRequest,
+    CheckpointGenerateResponse,
     CheckpointRead,
     CheckpointUpdate,
 )
@@ -32,16 +33,16 @@ def create_checkpoint(
     return checkpoints_service.create_manual_checkpoint(db, commitment, data)
 
 
-@router.post("/commitments/{commitment_id}/checkpoints/generate", response_model=list[CheckpointRead])
+@router.post("/commitments/{commitment_id}/checkpoints/generate", response_model=CheckpointGenerateResponse)
 def generate_checkpoints(
     commitment_id: uuid.UUID, data: CheckpointGenerateRequest, db: Session = Depends(get_db)
-) -> list[CheckpointRead]:
+) -> CheckpointGenerateResponse:
     commitment = commitments_service.get_commitment_or_raise(db, commitment_id)
     lead_time_days = data.lead_time_days if data.lead_time_days is not None else commitment.lead_time_days
-    created, _immediate_attention = checkpoints_service.generate_auto_checkpoints(
+    created, immediate_attention = checkpoints_service.generate_auto_checkpoints(
         db, commitment, lead_time_days=lead_time_days, reference_time=tz_now()
     )
-    return created
+    return CheckpointGenerateResponse(checkpoints=created, immediate_attention_required=immediate_attention)
 
 
 @router.patch("/checkpoints/{checkpoint_id}", response_model=CheckpointRead)

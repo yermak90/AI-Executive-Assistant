@@ -64,6 +64,7 @@ class CommitmentUpdate(BaseModel):
     direction: Direction | None = None
     deadline: datetime | None = None
     source_text: str | None = None
+    lead_time_days: int | None = Field(default=None, gt=0)
 
     _validate_title = field_validator("title")(reject_explicit_null)
     _validate_direction = field_validator("direction")(reject_explicit_null)
@@ -110,3 +111,14 @@ class CommitmentRead(BaseModel):
 class CommitmentDetail(CommitmentRead):
     history: list[CommitmentHistoryRead] = []
     checkpoints: list[CheckpointRead] = []
+
+
+class RescheduleResponse(BaseModel):
+    """P1-08: a reschedule can silently strand MANUAL checkpoints past the
+    new deadline, or clamp a shifted AUTO_RULE checkpoint to created_at —
+    both need to reach the caller instead of disappearing into the plain
+    CommitmentDetail response."""
+
+    commitment: CommitmentDetail
+    immediate_attention_required: bool
+    manual_checkpoints_after_deadline: list[CheckpointRead]

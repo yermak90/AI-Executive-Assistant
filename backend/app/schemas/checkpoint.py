@@ -66,3 +66,13 @@ class CheckpointRead(BaseModel):
     completed_at: datetime | None
     skipped_at: datetime | None
     assessed_at: datetime | None
+
+
+class CheckpointGenerateResponse(BaseModel):
+    """FR-016: if the rule-computed date already passed (or falls before the
+    commitment was created), that signal must not be silently swallowed —
+    the caller needs to know an intervention is needed right now, even
+    though a checkpoint was still created (in the past) rather than dropped."""
+
+    checkpoints: list[CheckpointRead]
+    immediate_attention_required: bool

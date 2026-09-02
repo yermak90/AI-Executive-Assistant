@@ -20,6 +20,7 @@ import { DIRECTIONS, DIRECTION_LABELS } from "../../src/types/domain";
 const schema = z
   .object({
     title: z.string().min(1, "Укажите задачу"),
+    description: z.string().nullable(),
     direction: z.enum(["OWED_TO_ME", "I_OWE", "TEAM"]),
     personId: z.string().nullable(),
     counterpartyId: z.string().nullable(),
@@ -48,6 +49,10 @@ export default function CommitmentFormScreen() {
 
   const [enableControl, setEnableControl] = useState(false);
   const [leadTimeDays, setLeadTimeDays] = useState<number | null>(2);
+  const [customLeadTime, setCustomLeadTime] = useState(false);
+  const [customLeadTimeText, setCustomLeadTimeText] = useState("");
+  const [controlQuestion, setControlQuestion] = useState("");
+  const [controlReason, setControlReason] = useState("");
 
   const {
     control,
@@ -59,6 +64,7 @@ export default function CommitmentFormScreen() {
     resolver: zodResolver(schema),
     defaultValues: {
       title: "",
+      description: null,
       direction: "OWED_TO_ME",
       personId: null,
       counterpartyId: null,
@@ -74,6 +80,7 @@ export default function CommitmentFormScreen() {
     if (isEdit && existingQuery.data) {
       reset({
         title: existingQuery.data.title,
+        description: existingQuery.data.description,
         direction: existingQuery.data.direction,
         personId: existingQuery.data.person?.id ?? null,
         counterpartyId: existingQuery.data.counterparty?.id ?? null,
@@ -98,6 +105,7 @@ export default function CommitmentFormScreen() {
   const onSubmit = (values: FormValues) => {
     const payload: Record<string, unknown> = {
       title: values.title,
+      description: values.description || null,
       direction: values.direction,
       project_id: values.projectId,
       deadline: values.deadline,
@@ -111,8 +119,11 @@ export default function CommitmentFormScreen() {
     }
 
     if (!isEdit) {
+      const effectiveLeadTime = customLeadTime ? Number(customLeadTimeText) || null : leadTimeDays;
       payload.enable_control = enableControl;
-      payload.lead_time_days = enableControl ? leadTimeDays : null;
+      payload.lead_time_days = enableControl ? effectiveLeadTime : null;
+      payload.control_question = enableControl ? controlQuestion.trim() || null : null;
+      payload.control_reason = enableControl ? controlReason.trim() || null : null;
     }
 
     const mutation = isEdit ? updateMutation : createMutation;
@@ -137,6 +148,20 @@ export default function CommitmentFormScreen() {
             value={field.value}
             onChangeText={field.onChange}
             error={errors.title?.message}
+          />
+        )}
+      />
+
+      <Controller
+        control={control}
+        name="description"
+        render={({ field }) => (
+          <TextField
+            label="Описание"
+            placeholder="Дополнительные детали (необязательно)"
+            value={field.value ?? ""}
+            onChangeText={field.onChange}
+            multiline
           />
         )}
       />
@@ -208,15 +233,52 @@ export default function CommitmentFormScreen() {
                 {LEAD_TIME_OPTIONS.map((days) => (
                   <Pressable
                     key={days}
-                    style={[styles.leadChip, leadTimeDays === days && styles.leadChipActive]}
-                    onPress={() => setLeadTimeDays(days)}
+                    style={[styles.leadChip, !customLeadTime && leadTimeDays === days && styles.leadChipActive]}
+                    onPress={() => {
+                      setCustomLeadTime(false);
+                      setLeadTimeDays(days);
+                    }}
                   >
-                    <Text style={[styles.leadChipLabel, leadTimeDays === days && styles.leadChipLabelActive]}>
+                    <Text
+                      style={[
+                        styles.leadChipLabel,
+                        !customLeadTime && leadTimeDays === days && styles.leadChipLabelActive,
+                      ]}
+                    >
                       {days}
                     </Text>
                   </Pressable>
                 ))}
+                <Pressable
+                  style={[styles.leadChip, styles.leadChipCustom, customLeadTime && styles.leadChipActive]}
+                  onPress={() => setCustomLeadTime(true)}
+                >
+                  <Text style={[styles.leadChipLabel, customLeadTime && styles.leadChipLabelActive]}>Свое</Text>
+                </Pressable>
               </View>
+
+              {customLeadTime ? (
+                <TextField
+                  label="Дней до срока"
+                  keyboardType="number-pad"
+                  placeholder="Например, 5"
+                  value={customLeadTimeText}
+                  onChangeText={setCustomLeadTimeText}
+                />
+              ) : null}
+
+              <TextField
+                label="Контрольный вопрос (необязательно)"
+                placeholder="Что проверить?"
+                value={controlQuestion}
+                onChangeText={setControlQuestion}
+              />
+              <TextField
+                label="Почему важно (необязательно)"
+                placeholder="Причина контроля"
+                value={controlReason}
+                onChangeText={setControlReason}
+              />
             </View>
           ) : null}
         </View>
@@ -308,6 +370,9 @@ const styles = StyleSheet.create({
   leadChipActive: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
+  },
+  leadChipCustom: {
+    width: 56,
   },
   leadChipLabel: {
     ...typography.body,

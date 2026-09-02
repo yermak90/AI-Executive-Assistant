@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { colors, radius, spacing, typography } from "../theme";
+import { computeQuickOptionDate } from "../utils/deadlineOptions";
 import { formatDateTime } from "../utils/date";
 
 interface DeadlinePickerProps {
@@ -52,13 +53,11 @@ export function DeadlinePicker({ label, value, onChange }: DeadlinePickerProps) 
   };
 
   const handleQuickOption = (offsetDays: number) => {
-    const base = hasDeadline ? date : new Date();
-    const next = new Date(base);
-    next.setDate(next.getDate() + offsetDays);
-    if (offsetDays === 0 && next < new Date()) {
-      // "Today" from a fresh pick should still land later today, not in the past.
-      next.setHours(new Date().getHours() + 1, 0, 0, 0);
-    }
+    // P0-02 fix: the day offset is always computed from the current real
+    // date/time, never from the picker's existing value — only the time of
+    // day carries over, so repeated taps don't compound (see
+    // computeQuickOptionDate's tests).
+    const next = computeQuickOptionDate(offsetDays, new Date(), hasDeadline ? date : null);
     setHasDeadline(true);
     applyDate(next);
   };

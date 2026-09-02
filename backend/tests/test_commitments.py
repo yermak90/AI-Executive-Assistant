@@ -258,7 +258,7 @@ def test_reschedule_preserves_old_and_new_deadline_in_history(client):
         f"/api/v1/commitments/{body['id']}/reschedule", json={"deadline": new_deadline.isoformat()}
     )
     assert resp.status_code == 200
-    events = [h for h in resp.json()["history"] if h["event_type"] == "DEADLINE_CHANGED"]
+    events = [h for h in resp.json()["commitment"]["history"] if h["event_type"] == "DEADLINE_CHANGED"]
     assert len(events) == 1
     assert events[0]["old_value"]["deadline"] is not None
     assert events[0]["new_value"]["deadline"] is not None
@@ -272,6 +272,22 @@ def test_update_title_records_old_and_new_value(client):
     assert len(updated_events) == 1
     assert updated_events[0]["old_value"]["title"] == "Old title"
     assert updated_events[0]["new_value"]["title"] == "New title"
+
+
+def test_update_owner_records_resolved_names_not_raw_ids(client):
+    """P1-9: history must be human-readable — a person/project change should
+    read as a name, not a bare UUID the mobile app would have to resolve
+    itself (or worse, just display as-is)."""
+    old_owner_id = _create_person(client, name="Аян")
+    new_owner_id = _create_person(client, name="Руслан")
+    body = _create_commitment(client, owner_person_id=old_owner_id)
+
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"owner_person_id": new_owner_id})
+    assert resp.status_code == 200, resp.text
+    updated_events = [h for h in resp.json()["history"] if h["event_type"] == "UPDATED"]
+    assert len(updated_events) == 1
+    assert updated_events[0]["old_value"]["owner_person_id"] == "Аян"
+    assert updated_events[0]["new_value"]["owner_person_id"] == "Руслан"
 
 
 def test_update_with_no_actual_change_creates_no_history(client):
@@ -304,3 +320,54 @@ def test_null_deadline_is_not_overdue(client):
 
     overdue_list = client.get("/api/v1/commitments", params={"bucket": "overdue"})
     assert body["id"] not in [c["id"] for c in overdue_list.json()]
+
+
+# --- P0-3: direction/ownership invariants enforced on PATCH ---------------
+
+
+def test_patch_direction_to_i_owe_clears_stale_owner(client):
+    """Changing direction to I_OWE without touching owner_person_id must
+    clear the now-incompatible hidden field rather than leave it dangling."""
+    body = _create_commitment(client)  # OWED_TO_ME with an owner
+    assert body["person"] is not None
+
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"direction": "I_OWE"})
+    assert resp.status_code == 200, resp.text
+    updated = resp.json()
+    assert updated["direction"] == "I_OWE"
+    assert updated["person"] is None
+
+
+def test_patch_direction_to_i_owe_with_explicit_owner_rejected(client):
+    body = _create_commitment(client)
+    resp = client.patch(
+        f"/api/v1/commitments/{body['id']}",
+        json={"direction": "I_OWE", "owner_person_id": body["person"]["id"]},
+    )
+    assert resp.status_code == 422
+
+
+def test_patch_direction_to_owed_to_me_without_owner_rejected(client):
+    body = _create_commitment(client, direction="I_OWE")
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"direction": "OWED_TO_ME"})
+    assert resp.status_code == 422
+
+
+def test_patch_direction_to_team_with_existing_owner_succeeds(client):
+    body = _create_commitment(client)  # already has an owner
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"direction": "TEAM"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["direction"] == "TEAM"
+    assert resp.json()["person"] is not None
+
+
+def test_patch_clearing_owner_on_owed_to_me_rejected(client):
+    body = _create_commitment(client)
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"owner_person_id": None})
+    assert resp.status_code == 422
+
+
+def test_patch_direction_to_team_without_owner_and_none_existing_rejected(client):
+    body = _create_commitment(client, direction="I_OWE")
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"direction": "TEAM"})
+    assert resp.status_code == 422

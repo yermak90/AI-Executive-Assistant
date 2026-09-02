@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Badge } from "../../src/components/Badge";
 import { Card } from "../../src/components/Card";
 import { EmptyState } from "../../src/components/EmptyState";
 import { ErrorState } from "../../src/components/ErrorState";
@@ -47,8 +48,11 @@ export default function ProjectsScreen() {
           ) : (
             data.map((project) => (
               <Pressable key={project.id} onPress={() => router.push(`/project/${project.id}`)}>
-                <Card style={styles.card}>
-                  <Text style={styles.projectName}>{project.name}</Text>
+                <Card style={[styles.card, !project.is_active && styles.cardInactive]}>
+                  <View style={styles.nameRow}>
+                    <Text style={styles.projectName}>{project.name}</Text>
+                    {!project.is_active ? <Badge label="Неактивен" color={colors.textMuted} /> : null}
+                  </View>
                   <Text style={styles.stats}>
                     {pluralizeActiveCommitments(project.active_commitments_count)}
                     {project.overdue_commitments_count > 0
@@ -98,9 +102,17 @@ const styles = StyleSheet.create({
   card: {
     marginBottom: spacing.md,
   },
+  cardInactive: {
+    opacity: 0.6,
+  },
+  nameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.xs,
+  },
   projectName: {
     ...typography.title,
-    marginBottom: spacing.xs,
   },
   stats: {
     ...typography.caption,

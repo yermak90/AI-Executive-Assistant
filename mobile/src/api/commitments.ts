@@ -1,5 +1,14 @@
 import { apiClient } from "./client";
-import { Bucket, Commitment, CommitmentDetail, CommitmentHistoryEntry, ControlHealth, Direction, CommitmentStatus } from "../types/domain";
+import {
+  Bucket,
+  Checkpoint,
+  Commitment,
+  CommitmentDetail,
+  CommitmentHistoryEntry,
+  ControlHealth,
+  Direction,
+  CommitmentStatus,
+} from "../types/domain";
 
 export interface CommitmentListFilters {
   direction?: Direction;
@@ -35,6 +44,13 @@ export interface UpdateCommitmentInput {
   direction?: Direction;
   deadline?: string | null;
   source_text?: string | null;
+  lead_time_days?: number | null;
+}
+
+export interface RescheduleResult {
+  commitment: CommitmentDetail;
+  immediate_attention_required: boolean;
+  manual_checkpoints_after_deadline: Checkpoint[];
 }
 
 function buildQuery(filters: CommitmentListFilters): string {
@@ -58,7 +74,7 @@ export const commitmentsApi = {
     apiClient.patch<CommitmentDetail>(`/commitments/${id}`, data),
   complete: (id: string) => apiClient.post<CommitmentDetail>(`/commitments/${id}/complete`),
   reschedule: (id: string, deadline: string | null) =>
-    apiClient.post<CommitmentDetail>(`/commitments/${id}/reschedule`, { deadline }),
+    apiClient.post<RescheduleResult>(`/commitments/${id}/reschedule`, { deadline }),
   cancel: (id: string) => apiClient.post<CommitmentDetail>(`/commitments/${id}/cancel`),
   history: (id: string) => apiClient.get<CommitmentHistoryEntry[]>(`/commitments/${id}/history`),
 };
