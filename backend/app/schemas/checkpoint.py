@@ -27,9 +27,14 @@ class CheckpointUpdate(BaseModel):
 class CheckpointGenerateRequest(BaseModel):
     """Trigger AUTO_RULE checkpoint generation. lead_time_days overrides the
     commitment's stored value for this generation; omit to use the stored
-    lead_time_days or fall back to the default planning table (FR-016)."""
+    lead_time_days or fall back to the default planning table (FR-016).
+    question/reason, when given, override the generated checkpoint's
+    default template text (same as control_question/control_reason at
+    creation) rather than requiring a separate follow-up edit call."""
 
     lead_time_days: int | None = Field(default=None, gt=0)
+    question: str | None = None
+    reason: str | None = None
 
 
 ASSESSABLE_VALUES = (CheckpointAssessment.ON_TRACK, CheckpointAssessment.AT_RISK, CheckpointAssessment.BLOCKED)

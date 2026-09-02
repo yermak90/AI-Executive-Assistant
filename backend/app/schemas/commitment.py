@@ -113,6 +113,17 @@ class CommitmentDetail(CommitmentRead):
     checkpoints: list[CheckpointRead] = []
 
 
+class CommitmentCreateResponse(BaseModel):
+    """P0-04 review follow-up: creating a commitment with enable_control=True
+    and a deadline close enough to trigger the immediate-attention clamp
+    (see generate_auto_checkpoints) must not swallow that signal — the
+    caller needs it alongside the created commitment, not only discoverable
+    later via control_health."""
+
+    commitment: CommitmentDetail
+    immediate_attention_required: bool
+
+
 class RescheduleResponse(BaseModel):
     """P1-08: a reschedule can silently strand MANUAL checkpoints past the
     new deadline, or clamp a shifted AUTO_RULE checkpoint to created_at —

@@ -109,22 +109,34 @@ def update_checkpoint(db: Session, checkpoint: CommitmentCheckpoint, data: Check
     if "scheduled_at" in updates:
         new_scheduled_at = updates.pop("scheduled_at")
         _validate_checkpoint_timing(commitment, new_scheduled_at)
-        if _has_duplicate(commitment, new_scheduled_at, exclude_id=checkpoint.id):
-            raise ValidationAppError("A checkpoint is already scheduled at this exact time")
-        old_scheduled_at = checkpoint.scheduled_at
-        checkpoint.scheduled_at = new_scheduled_at
-        _add_history(
-            db,
-            commitment.id,
-            HistoryEventType.CHECKPOINT_RESCHEDULED,
-            {"scheduled_at": old_scheduled_at.isoformat(), "title": checkpoint.title},
-            {"scheduled_at": new_scheduled_at.isoformat(), "title": checkpoint.title},
-        )
+        if new_scheduled_at != checkpoint.scheduled_at:
+            if _has_duplicate(commitment, new_scheduled_at, exclude_id=checkpoint.id):
+                raise ValidationAppError("A checkpoint is already scheduled at this exact time")
+            old_scheduled_at = checkpoint.scheduled_at
+            checkpoint.scheduled_at = new_scheduled_at
+            _add_history(
+                db,
+                commitment.id,
+                HistoryEventType.CHECKPOINT_RESCHEDULED,
+                {"scheduled_at": old_scheduled_at.isoformat(), "title": checkpoint.title},
+                {"scheduled_at": new_scheduled_at.isoformat(), "title": checkpoint.title},
+            )
 
-    if updates:
-        for field, value in updates.items():
-            setattr(checkpoint, field, value)
-        _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_UPDATED, None, {**updates, "title": checkpoint.title})
+    changed_old: dict[str, object] = {}
+    changed_new: dict[str, object] = {}
+    for field in ("title", "question", "reason"):
+        if field not in updates:
+            continue
+        new_value = updates[field]
+        old_value = getattr(checkpoint, field)
+        if new_value == old_value:
+            continue
+        changed_old[field] = old_value
+        changed_new[field] = new_value
+        setattr(checkpoint, field, new_value)
+
+    if changed_new:
+        _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_UPDATED, changed_old, changed_new)
 
     db.commit()
     db.refresh(checkpoint)
@@ -226,8 +238,25 @@ def generate_auto_checkpoints(
     commitment: Commitment,
     lead_time_days: int | None,
     reference_time: datetime,
+    question_override: str | None = None,
+    reason_override: str | None = None,
+    commit: bool = True,
 ) -> tuple[list[CommitmentCheckpoint], bool]:
-    """Returns (created_checkpoints, immediate_attention_required)."""
+    """Returns (checkpoints reflecting the current plan, immediate_attention_required).
+
+    P1-06: this replaces the commitment's existing PENDING AUTO_RULE
+    checkpoints with the freshly computed plan instead of piling new ones on
+    top every time control settings change (e.g. 2 days -> 3 days lead
+    time). A still-pending AUTO_RULE checkpoint that keeps a slot in the new
+    plan is moved in place (CHECKPOINT_AUTO_RECALCULATED, same as a
+    reschedule); one with no slot left in the new plan is removed with no
+    history entry (same convention as deleting any other never-actioned
+    PENDING checkpoint). COMPLETED/SKIPPED checkpoints and MANUAL
+    checkpoints are never touched.
+
+    `commit=False` lets create_commitment fold this into its own single
+    transaction instead of committing here independently.
+    """
     if commitment.status != CommitmentStatus.ACTIVE:
         raise ConflictError("Cannot generate a checkpoint for a commitment that is not ACTIVE")
     if commitment.deadline is None:
@@ -238,9 +267,8 @@ def generate_auto_checkpoints(
     else:
         scheduled_times = _default_rule_schedule(commitment.deadline, reference_time, commitment.created_at)
 
-    created: list[CommitmentCheckpoint] = []
+    resolved_times: list[datetime] = []
     immediate_attention = False
-
     for computed_at in scheduled_times:
         if computed_at >= commitment.deadline:
             continue
@@ -254,34 +282,92 @@ def generate_auto_checkpoints(
             # instead of only a one-off flag in this response.
             scheduled_at = commitment.created_at
             immediate_attention = True
+        resolved_times.append(scheduled_at)
 
-        if _has_duplicate(commitment, scheduled_at):
-            continue
+    stale = [
+        cp
+        for cp in commitment.checkpoints
+        if cp.status == CheckpointStatus.PENDING and cp.source_type == CheckpointSourceType.AUTO_RULE
+    ]
 
-        suggestion = _suggestion_provider.suggest(commitment, scheduled_at, reference_time)
-        checkpoint = CommitmentCheckpoint(
-            commitment_id=commitment.id,
-            title=suggestion.title,
-            question=suggestion.question,
-            reason=suggestion.reason,
-            scheduled_at=scheduled_at,
-            source_type=CheckpointSourceType.AUTO_RULE,
-        )
-        db.add(checkpoint)
-        db.flush()
-        commitment.checkpoints.append(checkpoint)
-        created.append(checkpoint)
-        _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_CREATED, None, _checkpoint_snapshot(checkpoint))
+    result: list[CommitmentCheckpoint] = []
+    for scheduled_at in resolved_times:
+        already_present = next((cp for cp in commitment.checkpoints if cp.scheduled_at == scheduled_at), None)
+        if already_present is not None:
+            if already_present in stale:
+                stale.remove(already_present)
+            result.append(already_present)
+        elif stale:
+            checkpoint = stale.pop(0)
+            old_scheduled_at = checkpoint.scheduled_at
+            checkpoint.scheduled_at = scheduled_at
+            _add_history(
+                db,
+                commitment.id,
+                HistoryEventType.CHECKPOINT_AUTO_RECALCULATED,
+                {"scheduled_at": old_scheduled_at.isoformat()},
+                {"scheduled_at": scheduled_at.isoformat()},
+            )
+            result.append(checkpoint)
+        else:
+            suggestion = _suggestion_provider.suggest(commitment, scheduled_at, reference_time)
+            checkpoint = CommitmentCheckpoint(
+                commitment_id=commitment.id,
+                title=suggestion.title,
+                question=suggestion.question,
+                reason=suggestion.reason,
+                scheduled_at=scheduled_at,
+                source_type=CheckpointSourceType.AUTO_RULE,
+            )
+            db.add(checkpoint)
+            db.flush()
+            commitment.checkpoints.append(checkpoint)
+            _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_CREATED, None, _checkpoint_snapshot(checkpoint))
+            result.append(checkpoint)
 
         if scheduled_at <= reference_time:
             immediate_attention = True
 
-    if created:
+    for leftover in stale:
+        commitment.checkpoints.remove(leftover)
+        db.delete(leftover)
+
+    if question_override is not None or reason_override is not None:
+        for checkpoint in result:
+            if question_override is not None:
+                checkpoint.question = question_override
+            if reason_override is not None:
+                checkpoint.reason = reason_override
+
+    db.flush()
+
+    if commit:
         db.commit()
-        for cp in created:
+        for cp in result:
             db.refresh(cp)
 
-    return created, immediate_attention
+    return result, immediate_attention
+
+
+def disable_auto_control(db: Session, commitment: Commitment, now: datetime) -> None:
+    """P1-06: turning off preliminary control (lead_time_days -> null) skips
+    every still-PENDING AUTO_RULE checkpoint rather than leaving it dangling
+    with control nominally disabled. MANUAL checkpoints and any already
+    COMPLETED/SKIPPED one are left untouched — only the auto-generated plan
+    is being turned off."""
+    for checkpoint in commitment.checkpoints:
+        if checkpoint.status != CheckpointStatus.PENDING or checkpoint.source_type != CheckpointSourceType.AUTO_RULE:
+            continue
+        checkpoint.status = CheckpointStatus.SKIPPED
+        checkpoint.skipped_at = now
+        checkpoint.action_note = "Предварительный контроль отключен"
+        _add_history(
+            db,
+            commitment.id,
+            HistoryEventType.CHECKPOINT_SKIPPED,
+            None,
+            {"title": checkpoint.title, "reason": checkpoint.action_note},
+        )
 
 
 def recalculate_auto_checkpoints(

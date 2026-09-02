@@ -53,6 +53,11 @@ export interface RescheduleResult {
   manual_checkpoints_after_deadline: Checkpoint[];
 }
 
+export interface CreateCommitmentResult {
+  commitment: CommitmentDetail;
+  immediate_attention_required: boolean;
+}
+
 function buildQuery(filters: CommitmentListFilters): string {
   const params = new URLSearchParams();
   if (filters.direction) params.set("direction", filters.direction);
@@ -69,7 +74,7 @@ function buildQuery(filters: CommitmentListFilters): string {
 export const commitmentsApi = {
   list: (filters: CommitmentListFilters = {}) => apiClient.get<Commitment[]>(`/commitments${buildQuery(filters)}`),
   get: (id: string) => apiClient.get<CommitmentDetail>(`/commitments/${id}`),
-  create: (data: CreateCommitmentInput) => apiClient.post<CommitmentDetail>("/commitments", data),
+  create: (data: CreateCommitmentInput) => apiClient.post<CreateCommitmentResult>("/commitments", data),
   update: (id: string, data: UpdateCommitmentInput) =>
     apiClient.patch<CommitmentDetail>(`/commitments/${id}`, data),
   complete: (id: string) => apiClient.post<CommitmentDetail>(`/commitments/${id}/complete`),

@@ -201,7 +201,11 @@ def _resolve_direction_ownership(commitment: Commitment, updates: dict) -> None:
         raise ValidationAppError(f"owner_person_id is required for direction {resolved_direction.value}")
 
 
-def create_commitment(db: Session, data: CommitmentCreate) -> Commitment:
+def create_commitment(db: Session, data: CommitmentCreate) -> tuple[Commitment, bool]:
+    """Returns (commitment, immediate_attention_required). The commitment,
+    its CREATED history entry, and any auto-generated initial checkpoint
+    (with its own history entry) are all created in a single transaction —
+    either the whole thing lands, or none of it does."""
     if data.owner_person_id is not None:
         _get_person_or_raise(db, data.owner_person_id)
     if data.counterparty_person_id is not None:
@@ -236,22 +240,21 @@ def create_commitment(db: Session, data: CommitmentCreate) -> Commitment:
             },
         )
     )
-    db.commit()
-    db.refresh(commitment)
 
+    immediate_attention = False
     if data.enable_control and commitment.deadline is not None:
-        checkpoints_service.generate_auto_checkpoints(
-            db, commitment, lead_time_days=data.lead_time_days, reference_time=tz_now()
+        _, immediate_attention = checkpoints_service.generate_auto_checkpoints(
+            db,
+            commitment,
+            lead_time_days=data.lead_time_days,
+            reference_time=tz_now(),
+            question_override=data.control_question,
+            reason_override=data.control_reason,
+            commit=False,
         )
-        if data.control_question or data.control_reason:
-            for cp in commitment.checkpoints:
-                if data.control_question:
-                    cp.question = data.control_question
-                if data.control_reason:
-                    cp.reason = data.control_reason
-            db.commit()
 
-    return get_commitment_or_raise(db, commitment.id)
+    db.commit()
+    return get_commitment_or_raise(db, commitment.id), immediate_attention
 
 
 def _render_field(db: Session, field: str, value) -> object:
@@ -303,6 +306,10 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
     else:
         updates.pop("deadline", None)
 
+    disabling_control = (
+        "lead_time_days" in updates and updates["lead_time_days"] is None and commitment.lead_time_days is not None
+    )
+
     changed_old: dict[str, object] = {}
     changed_new: dict[str, object] = {}
     for field in _TRACKED_FIELDS:
@@ -315,6 +322,11 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
         changed_old[field] = _render_field(db, field, old_value)
         changed_new[field] = _render_field(db, field, new_value)
         setattr(commitment, field, new_value)
+
+    if disabling_control:
+        # P1-06: turning off preliminary control must not leave its
+        # AUTO_RULE checkpoint(s) dangling as if control were still active.
+        checkpoints_service.disable_auto_control(db, commitment, tz_now())
 
     if "source_text" in updates and updates["source_text"] != commitment.source_text:
         commitment.source_text = updates["source_text"]

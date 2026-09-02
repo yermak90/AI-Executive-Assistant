@@ -16,6 +16,7 @@ import { usePeopleQuery } from "../../src/hooks/usePeople";
 import { useProjectsQuery } from "../../src/hooks/useProjects";
 import { colors, radius, spacing, typography } from "../../src/theme";
 import { DIRECTIONS, DIRECTION_LABELS } from "../../src/types/domain";
+import { resolveImmediateAttentionAlert } from "../../src/utils/immediateAttention";
 
 const schema = z
   .object({
@@ -126,13 +127,26 @@ export default function CommitmentFormScreen() {
       payload.control_reason = enableControl ? controlReason.trim() || null : null;
     }
 
-    const mutation = isEdit ? updateMutation : createMutation;
-    mutation.mutate(payload as any, {
-      onSuccess: () => router.back(),
-      onError: (error: unknown) => {
-        const message = error instanceof ApiError ? error.detail : "Не удалось сохранить обязательство";
-        Alert.alert("Ошибка", message);
+    const handleError = (error: unknown) => {
+      const message = error instanceof ApiError ? error.detail : "Не удалось сохранить обязательство";
+      Alert.alert("Ошибка", message);
+    };
+
+    if (isEdit) {
+      updateMutation.mutate(payload as any, { onSuccess: () => router.back(), onError: handleError });
+      return;
+    }
+
+    createMutation.mutate(payload as any, {
+      onSuccess: (result) => {
+        const alert = resolveImmediateAttentionAlert(result.immediate_attention_required);
+        if (alert) {
+          Alert.alert(alert.title, alert.message, [{ text: "ОК", onPress: () => router.back() }]);
+        } else {
+          router.back();
+        }
       },
+      onError: handleError,
     });
   };
 

@@ -8,6 +8,7 @@ from app.models.commitment import CommitmentStatus, Direction
 from app.schemas.commitment import (
     Bucket,
     CommitmentCreate,
+    CommitmentCreateResponse,
     CommitmentDetail,
     CommitmentHistoryRead,
     CommitmentRead,
@@ -46,10 +47,13 @@ def list_commitments(
     return [commitments_service.to_commitment_read(c) for c in commitments]
 
 
-@router.post("", response_model=CommitmentDetail, status_code=201)
-def create_commitment(data: CommitmentCreate, db: Session = Depends(get_db)) -> CommitmentDetail:
-    commitment = commitments_service.create_commitment(db, data)
-    return commitments_service.to_commitment_detail(commitment)
+@router.post("", response_model=CommitmentCreateResponse, status_code=201)
+def create_commitment(data: CommitmentCreate, db: Session = Depends(get_db)) -> CommitmentCreateResponse:
+    commitment, immediate_attention = commitments_service.create_commitment(db, data)
+    return CommitmentCreateResponse(
+        commitment=commitments_service.to_commitment_detail(commitment),
+        immediate_attention_required=immediate_attention,
+    )
 
 
 @router.get("/{commitment_id}", response_model=CommitmentDetail)

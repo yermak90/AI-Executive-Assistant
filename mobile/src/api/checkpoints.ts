@@ -29,9 +29,16 @@ export const checkpointsApi = {
   list: (commitmentId: string) => apiClient.get<Checkpoint[]>(`/commitments/${commitmentId}/checkpoints`),
   create: (commitmentId: string, data: CreateCheckpointInput) =>
     apiClient.post<Checkpoint>(`/commitments/${commitmentId}/checkpoints`, data),
-  generate: (commitmentId: string, leadTimeDays?: number | null) =>
+  generate: (
+    commitmentId: string,
+    leadTimeDays?: number | null,
+    question?: string | null,
+    reason?: string | null
+  ) =>
     apiClient.post<GenerateCheckpointsResult>(`/commitments/${commitmentId}/checkpoints/generate`, {
       lead_time_days: leadTimeDays ?? null,
+      question: question ?? null,
+      reason: reason ?? null,
     }),
   update: (checkpointId: string, data: UpdateCheckpointInput) =>
     apiClient.patch<Checkpoint>(`/checkpoints/${checkpointId}`, data),

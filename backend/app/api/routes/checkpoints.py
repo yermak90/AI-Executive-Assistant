@@ -40,7 +40,12 @@ def generate_checkpoints(
     commitment = commitments_service.get_commitment_or_raise(db, commitment_id)
     lead_time_days = data.lead_time_days if data.lead_time_days is not None else commitment.lead_time_days
     created, immediate_attention = checkpoints_service.generate_auto_checkpoints(
-        db, commitment, lead_time_days=lead_time_days, reference_time=tz_now()
+        db,
+        commitment,
+        lead_time_days=lead_time_days,
+        reference_time=tz_now(),
+        question_override=data.question,
+        reason_override=data.reason,
     )
     return CheckpointGenerateResponse(checkpoints=created, immediate_attention_required=immediate_attention)
 

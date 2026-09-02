@@ -5,7 +5,10 @@ import { useUpdateCommitment } from "../hooks/useCommitments";
 import { useGenerateCheckpoints } from "../hooks/useCheckpoints";
 import { ApiError } from "../api/client";
 import { colors, radius, spacing, typography } from "../theme";
+import { Checkpoint } from "../types/domain";
+import { resolveImmediateAttentionAlert } from "../utils/immediateAttention";
 import { Button } from "./Button";
+import { TextField } from "./TextField";
 
 const LEAD_TIME_PRESETS = [1, 2, 3, 7];
 
@@ -13,19 +16,27 @@ interface ControlSettingsCardProps {
   commitmentId: string;
   leadTimeDays: number | null;
   hasDeadline: boolean;
+  /** The commitment's current PENDING AUTO_RULE checkpoint, if any — its
+   * question/reason prefill the edit fields below. */
+  autoCheckpoint: Checkpoint | null;
 }
 
 /** PRD FR-015/FR-016 "Настроить контроль" block, editable after creation
- * (P1-06): pick a lead time (or a custom value), save it on the commitment,
- * and (re)generate the AUTO_RULE checkpoint from it. Surfaces
- * immediate_attention_required (P0-04) rather than letting it disappear
- * into an ignored response field. */
-export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline }: ControlSettingsCardProps) {
+ * (P1-06): pick a lead time (or a custom value), edit the control
+ * question/reason, save it on the commitment, and (re)generate the
+ * AUTO_RULE checkpoint from it — which replaces the existing PENDING
+ * AUTO_RULE checkpoint in place rather than piling a new one on top.
+ * Surfaces immediate_attention_required (P0-04) rather than letting it
+ * disappear into an ignored response field, and offers turning control off
+ * entirely. */
+export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline, autoCheckpoint }: ControlSettingsCardProps) {
   const [selected, setSelected] = useState<number | null>(leadTimeDays);
   const [customText, setCustomText] = useState(
     leadTimeDays && !LEAD_TIME_PRESETS.includes(leadTimeDays) ? String(leadTimeDays) : ""
   );
-  const [customMode, setCustomMode] = useState(!!customText);
+  const [customMode, setCustomMode] = useState(!!(leadTimeDays && !LEAD_TIME_PRESETS.includes(leadTimeDays)));
+  const [question, setQuestion] = useState(autoCheckpoint?.question ?? "");
+  const [reason, setReason] = useState(autoCheckpoint?.reason ?? "");
 
   const updateMutation = useUpdateCommitment(commitmentId);
   const generateMutation = useGenerateCheckpoints(commitmentId);
@@ -40,6 +51,7 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline }:
 
   const effectiveDays = customMode ? Number(customText) || null : selected;
   const isSaving = updateMutation.isPending || generateMutation.isPending;
+  const isEnabled = leadTimeDays !== null;
 
   const handleSave = () => {
     if (!effectiveDays || effectiveDays <= 0) {
@@ -50,21 +62,39 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline }:
       { lead_time_days: effectiveDays },
       {
         onSuccess: () => {
-          generateMutation.mutate(effectiveDays, {
-            onSuccess: (result) => {
-              if (result.immediate_attention_required) {
-                Alert.alert(
-                  "Требуется внимание сейчас",
-                  "Рекомендованная дата проверки уже наступила — вмешайтесь как можно скорее."
-                );
-              }
-            },
-            onError: (e: unknown) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось создать контрольную точку"),
-          });
+          generateMutation.mutate(
+            { leadTimeDays: effectiveDays, question: question.trim() || null, reason: reason.trim() || null },
+            {
+              onSuccess: (result) => {
+                const alert = resolveImmediateAttentionAlert(result.immediate_attention_required);
+                if (alert) Alert.alert(alert.title, alert.message);
+              },
+              onError: (e: unknown) =>
+                Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось создать контрольную точку"),
+            }
+          );
         },
         onError: (e: unknown) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось сохранить настройки"),
       }
     );
+  };
+
+  const handleDisable = () => {
+    Alert.alert("Отключить контроль?", "Запланированная проверка будет отменена.", [
+      { text: "Отмена", style: "cancel" },
+      {
+        text: "Отключить",
+        style: "destructive",
+        onPress: () =>
+          updateMutation.mutate(
+            { lead_time_days: null },
+            {
+              onError: (e: unknown) =>
+                Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось отключить контроль"),
+            }
+          ),
+      },
+    ]);
   };
 
   return (
@@ -99,7 +129,26 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline }:
         />
       ) : null}
 
+      <TextField
+        label="Контрольный вопрос (необязательно)"
+        placeholder="Что проверить?"
+        value={question}
+        onChangeText={setQuestion}
+      />
+      <TextField
+        label="Почему важно (необязательно)"
+        placeholder="Причина контроля"
+        value={reason}
+        onChangeText={setReason}
+      />
+
       <Button label="Сохранить и пересчитать" onPress={handleSave} loading={isSaving} disabled={!effectiveDays} />
+
+      {isEnabled ? (
+        <View style={styles.disableSpacer}>
+          <Button label="Отключить контроль" variant="secondary" onPress={handleDisable} loading={isSaving} />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -157,5 +206,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
     marginBottom: spacing.md,
+  },
+  disableSpacer: {
+    marginTop: spacing.sm,
   },
 });

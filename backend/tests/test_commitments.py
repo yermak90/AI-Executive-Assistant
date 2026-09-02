@@ -23,7 +23,7 @@ def _create_commitment(client, **overrides):
     payload.update(overrides)
     resp = client.post("/api/v1/commitments", json=payload)
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    return resp.json()["commitment"]
 
 
 # --- Creation / history --------------------------------------------------
@@ -58,7 +58,7 @@ def test_i_owe_rejects_owner_person(client):
 def test_i_owe_without_owner_succeeds(client):
     resp = client.post("/api/v1/commitments", json={"title": "Отправить КП", "direction": "I_OWE"})
     assert resp.status_code == 201
-    assert resp.json()["person"] is None
+    assert resp.json()["commitment"]["person"] is None
 
 
 # --- Buckets (FR-005): every ACTIVE commitment exactly one bucket --------

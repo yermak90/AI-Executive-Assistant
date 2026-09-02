@@ -129,7 +129,7 @@ def seed() -> None:
             ),
         ]
 
-        created = [create_commitment(db, data) for data in commitments_data]
+        created = [create_commitment(db, data)[0] for data in commitments_data]
         by_title = {c.title: c for c in created}
 
         # --- Manual checkpoint + AT_RISK assessment, so "Требует внимания"

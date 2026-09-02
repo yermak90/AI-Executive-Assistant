@@ -58,6 +58,12 @@ const FIELD_LABELS: Record<string, string> = {
   deadline: "Срок",
 };
 
+const CHECKPOINT_FIELD_LABELS: Record<string, string> = {
+  title: "Название",
+  question: "Вопрос",
+  reason: "Причина",
+};
+
 function formatFieldValue(field: string, value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (field === "direction" && typeof value === "string") {
@@ -95,6 +101,16 @@ function formatHistoryDetailLines(entry: CommitmentHistoryEntry): string[] {
     }
     if (typeof value.assessment_note === "string" && value.assessment_note) {
       return [value.assessment_note as string];
+    }
+    if (event_type === "CHECKPOINT_UPDATED") {
+      // title/question/reason old->new — old_value/new_value carry only
+      // the fields that actually changed (see backend update_checkpoint).
+      return Object.keys(value).map((field) => {
+        const label = CHECKPOINT_FIELD_LABELS[field] ?? field;
+        const oldText = formatFieldValue(field, old_value?.[field]);
+        const newText = formatFieldValue(field, new_value?.[field]);
+        return `${label}: ${oldText} → ${newText}`;
+      });
     }
     return [];
   }
@@ -251,6 +267,9 @@ export default function CommitmentDetailScreen() {
             commitmentId={commitment.id}
             leadTimeDays={commitment.lead_time_days}
             hasDeadline={commitment.deadline !== null}
+            autoCheckpoint={
+              commitment.checkpoints.find((cp) => cp.status === "PENDING" && cp.source_type === "AUTO_RULE") ?? null
+            }
           />
         </>
       ) : null}
