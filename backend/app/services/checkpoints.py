@@ -20,6 +20,7 @@ from app.services.checkpoint_suggestions import CheckpointSuggestionProvider, Ru
 
 REASON_COMPLETED = "Обязательство выполнено"
 REASON_CANCELLED = "Обязательство отменено"
+REASON_MERGED_ON_RECALCULATE = "Объединена с другой контрольной точкой при пересчёте"
 
 # P1-11 / Sprint-2 compatibility: the only place that picks which
 # CheckpointSuggestionProvider drafts auto-generated checkpoint text. Sprint
@@ -430,14 +431,19 @@ def recalculate_auto_checkpoints(
     anything. Pass 1 computes every new scheduled_at with no DB writes. Pass
     2 deterministically de-duplicates AUTO_RULE checkpoints that would land
     on the exact same instant (e.g. several all clamped to created_at): the
-    one with the earliest original scheduled_at wins and gets recalculated,
-    the rest are removed with no history (same convention as removing any
-    other never-actioned PENDING checkpoint with no slot left in the plan).
-    Pass 3 checks the surviving times against every MANUAL/COMPLETED/SKIPPED
-    checkpoint and raises ValidationAppError (422) on the first collision —
-    before any checkpoint has been moved, so a caller who already applied
-    the deadline change to `commitment` in the same transaction rolls that
-    back too. Only pass 4 writes anything.
+    one with the earliest original scheduled_at wins and gets recalculated;
+    the rest are audited, not silently discarded — each stays PENDING no
+    longer, is left at its own original scheduled_at (never moved), and is
+    marked SKIPPED with a CHECKPOINT_SKIPPED history entry explaining it was
+    merged into the winner. A checkpoint SKIPPED this way is never itself
+    treated as a protected/blocking slot for a later generation or
+    recalculation pass — it is a closed record, not a still-relevant
+    checkpoint. Pass 3 checks the surviving times against every
+    MANUAL/COMPLETED/SKIPPED-for-another-reason checkpoint and raises
+    ValidationAppError (422) on the first collision — before any checkpoint
+    has been moved, so a caller who already applied the deadline change to
+    `commitment` in the same transaction rolls that back too. Only pass 4
+    writes anything.
 
     Returns immediate_attention_required (P0-04/P1-08): shifting a
     checkpoint to before the commitment's created_at (e.g. a reschedule to a
@@ -455,7 +461,15 @@ def recalculate_auto_checkpoints(
     if not auto_checkpoints:
         return False
 
-    protected = [cp for cp in commitment.checkpoints if cp not in auto_checkpoints]
+    # A checkpoint previously SKIPPED by this same dedup (see pass 2 below)
+    # is a closed record, not a still-relevant slot: it must never re-block
+    # a later recalculation just because it happens to sit on a needed time.
+    protected = [
+        cp
+        for cp in commitment.checkpoints
+        if cp not in auto_checkpoints
+        and not (cp.source_type == CheckpointSourceType.AUTO_RULE and cp.status == CheckpointStatus.SKIPPED)
+    ]
 
     # Pass 1: compute every new scheduled_at, no mutation yet.
     immediate_attention = False
@@ -470,14 +484,16 @@ def recalculate_auto_checkpoints(
 
     # Pass 2: de-duplicate collisions among the newly-planned AUTO_RULE
     # times deterministically — process in original-scheduled_at order so
-    # the earliest-scheduled checkpoint always wins a tie.
+    # the earliest-scheduled checkpoint always wins a tie. The loser keeps
+    # its own original scheduled_at (it is never moved) and is skipped, with
+    # history, in pass 4 — not removed.
     planned.sort(key=lambda pair: pair[0].scheduled_at)
     seen_times: set[datetime] = set()
     deduped: list[tuple[CommitmentCheckpoint, datetime]] = []
-    to_remove: list[CommitmentCheckpoint] = []
+    to_merge: list[CommitmentCheckpoint] = []
     for checkpoint, new_scheduled_at in planned:
         if new_scheduled_at in seen_times:
-            to_remove.append(checkpoint)
+            to_merge.append(checkpoint)
             continue
         seen_times.add(new_scheduled_at)
         deduped.append((checkpoint, new_scheduled_at))
@@ -506,9 +522,18 @@ def recalculate_auto_checkpoints(
             {"scheduled_at": new_scheduled_at.isoformat()},
         )
 
-    for checkpoint in to_remove:
-        commitment.checkpoints.remove(checkpoint)
-        db.delete(checkpoint)
+    now = tz_now()
+    for checkpoint in to_merge:
+        checkpoint.status = CheckpointStatus.SKIPPED
+        checkpoint.skipped_at = now
+        checkpoint.action_note = REASON_MERGED_ON_RECALCULATE
+        _add_history(
+            db,
+            commitment.id,
+            HistoryEventType.CHECKPOINT_SKIPPED,
+            None,
+            {"title": checkpoint.title, "reason": REASON_MERGED_ON_RECALCULATE},
+        )
 
     return immediate_attention
 

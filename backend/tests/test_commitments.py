@@ -215,6 +215,37 @@ def test_patch_direction_null_returns_422(client):
     assert resp.status_code == 422
 
 
+def test_patch_deadline_date_returns_422_and_changes_nothing(client):
+    """P0 review: PATCH must not be a second way to change the deadline —
+    POST /commitments/{id}/reschedule is the only path, since only it
+    validates the AUTO_RULE plan and returns immediate_attention_required /
+    manual_checkpoints_after_deadline. A PATCH carrying a real deadline value
+    must be rejected outright, with nothing on the commitment touched."""
+    deadline = tz_now() + timedelta(days=10)
+    body = _create_commitment(client, deadline=deadline.isoformat())
+
+    new_deadline = deadline + timedelta(days=3)
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"deadline": new_deadline.isoformat()})
+    assert resp.status_code == 422, resp.text
+
+    detail = client.get(f"/api/v1/commitments/{body['id']}").json()
+    assert detail["deadline"] == body["deadline"]
+    assert not any(h["event_type"] == "DEADLINE_CHANGED" for h in detail["history"])
+
+
+def test_patch_deadline_null_returns_422_and_changes_nothing(client):
+    deadline = tz_now() + timedelta(days=10)
+    body = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+
+    resp = client.patch(f"/api/v1/commitments/{body['id']}", json={"deadline": None})
+    assert resp.status_code == 422, resp.text
+
+    detail = client.get(f"/api/v1/commitments/{body['id']}").json()
+    assert detail["deadline"] == body["deadline"]
+    assert detail["lead_time_days"] == 2
+    assert not any(h["event_type"] == "DEADLINE_CHANGED" for h in detail["history"])
+
+
 def test_create_with_invalid_person_id_returns_422(client):
     resp = client.post(
         "/api/v1/commitments",

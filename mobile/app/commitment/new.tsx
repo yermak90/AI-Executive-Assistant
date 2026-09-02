@@ -16,6 +16,7 @@ import { usePeopleQuery } from "../../src/hooks/usePeople";
 import { useProjectsQuery } from "../../src/hooks/useProjects";
 import { colors, radius, spacing, typography } from "../../src/theme";
 import { DIRECTIONS, DIRECTION_LABELS } from "../../src/types/domain";
+import { buildCommitmentPayload } from "../../src/utils/commitmentPayload";
 import { resolveImmediateAttentionAlert } from "../../src/utils/immediateAttention";
 
 const schema = z
@@ -104,28 +105,13 @@ export default function CommitmentFormScreen() {
   const directionOptions = DIRECTIONS.map((d) => ({ label: DIRECTION_LABELS[d], value: d }));
 
   const onSubmit = (values: FormValues) => {
-    const payload: Record<string, unknown> = {
-      title: values.title,
-      description: values.description || null,
-      direction: values.direction,
-      project_id: values.projectId,
-      deadline: values.deadline,
-    };
-
-    if (values.direction === "I_OWE") {
-      payload.owner_person_id = null;
-      payload.counterparty_person_id = values.counterpartyId;
-    } else {
-      payload.owner_person_id = values.personId;
-    }
-
-    if (!isEdit) {
-      const effectiveLeadTime = customLeadTime ? Number(customLeadTimeText) || null : leadTimeDays;
-      payload.enable_control = enableControl;
-      payload.lead_time_days = enableControl ? effectiveLeadTime : null;
-      payload.control_question = enableControl ? controlQuestion.trim() || null : null;
-      payload.control_reason = enableControl ? controlReason.trim() || null : null;
-    }
+    const effectiveLeadTime = customLeadTime ? Number(customLeadTimeText) || null : leadTimeDays;
+    const payload = buildCommitmentPayload(values, isEdit ? "edit" : "create", {
+      enableControl,
+      leadTimeDays: effectiveLeadTime,
+      controlQuestion,
+      controlReason,
+    });
 
     const handleError = (error: unknown) => {
       const message = error instanceof ApiError ? error.detail : "Не удалось сохранить обязательство";
@@ -225,11 +211,13 @@ export default function CommitmentFormScreen() {
         )}
       />
 
-      <Controller
-        control={control}
-        name="deadline"
-        render={({ field }) => <DeadlinePicker label="Срок" value={field.value} onChange={field.onChange} />}
-      />
+      {!isEdit ? (
+        <Controller
+          control={control}
+          name="deadline"
+          render={({ field }) => <DeadlinePicker label="Срок" value={field.value} onChange={field.onChange} />}
+        />
+      ) : null}
 
       {!isEdit && deadline ? (
         <View style={styles.controlBlock}>

@@ -53,8 +53,23 @@ class CommitmentCreate(BaseModel):
         return self
 
 
+def _reject_deadline_on_patch(value: datetime | None) -> datetime | None:
+    """P0 review: PATCH must not be a second way to change a commitment's
+    deadline — POST /commitments/{id}/reschedule is the only path, since it's
+    the only one that validates the new AUTO_RULE plan, cascades a null
+    deadline to lead_time_days/checkpoints, and returns
+    immediate_attention_required/manual_checkpoints_after_deadline. `deadline`
+    stays declared on this schema only so an explicit value (a date, or an
+    explicit null) is rejected with a clean 422 instead of silently ignored
+    or crashing further down; it is never read by the update service."""
+    raise ValueError(
+        "deadline cannot be changed via PATCH /commitments/{id}; use POST /commitments/{id}/reschedule instead"
+    )
+
+
 class CommitmentUpdate(BaseModel):
-    """General-purpose update. Deadline changes here are still tracked in history."""
+    """General-purpose update. Deadline is intentionally NOT settable here —
+    see _reject_deadline_on_patch."""
 
     title: str | None = Field(default=None, min_length=1, max_length=500)
     description: str | None = None
@@ -68,6 +83,7 @@ class CommitmentUpdate(BaseModel):
 
     _validate_title = field_validator("title")(reject_explicit_null)
     _validate_direction = field_validator("direction")(reject_explicit_null)
+    _reject_deadline = field_validator("deadline")(_reject_deadline_on_patch)
 
 
 class RescheduleRequest(BaseModel):

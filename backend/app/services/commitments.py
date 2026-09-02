@@ -294,21 +294,9 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
     if "project_id" in updates and updates["project_id"] is not None:
         _get_project_or_raise(db, updates["project_id"])
 
-    if "deadline" in updates and updates["deadline"] != commitment.deadline:
-        old_deadline = commitment.deadline
-        new_deadline = updates.pop("deadline")
-        commitment.deadline = new_deadline
-        db.add(
-            CommitmentHistory(
-                commitment_id=commitment.id,
-                event_type=HistoryEventType.DEADLINE_CHANGED,
-                old_value={"deadline": old_deadline.isoformat() if old_deadline else None},
-                new_value={"deadline": new_deadline.isoformat() if new_deadline else None},
-            )
-        )
-        checkpoints_service.recalculate_auto_checkpoints(db, commitment, old_deadline, new_deadline)
-    else:
-        updates.pop("deadline", None)
+    # P0 review: deadline is rejected at the schema level (CommitmentUpdate),
+    # so it can never reach here — POST /commitments/{id}/reschedule is the
+    # only way to change it. Nothing to do with `updates["deadline"]`.
 
     disabling_control = (
         "lead_time_days" in updates and updates["lead_time_days"] is None and commitment.lead_time_days is not None

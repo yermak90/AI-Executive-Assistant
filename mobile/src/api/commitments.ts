@@ -42,7 +42,6 @@ export interface UpdateCommitmentInput {
   counterparty_person_id?: string | null;
   project_id?: string | null;
   direction?: Direction;
-  deadline?: string | null;
   source_text?: string | null;
   lead_time_days?: number | null;
 }

@@ -403,11 +403,17 @@ def test_reschedule_deduplicates_multiple_auto_checkpoints_clamped_to_created_at
     would recalculate to before created_at must clamp both — but two
     checkpoints can't occupy the same instant, so the collision must be
     deduplicated deterministically instead of producing a duplicate or an
-    unrelated error."""
+    unrelated error.
+
+    Review follow-up: the loser of that dedup must not just vanish — it
+    stays on the commitment as an audited SKIPPED record (left at its own
+    original scheduled_at, never moved) instead of being silently deleted.
+    """
     deadline = tz_now() + timedelta(days=30)
     commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True)
     assert len(commitment["checkpoints"]) == 2
     earliest = min(commitment["checkpoints"], key=lambda cp: cp["scheduled_at"])
+    latest = max(commitment["checkpoints"], key=lambda cp: cp["scheduled_at"])
 
     new_deadline = tz_now() + timedelta(hours=1)
     resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": new_deadline.isoformat()})
@@ -416,9 +422,51 @@ def test_reschedule_deduplicates_multiple_auto_checkpoints_clamped_to_created_at
     assert body["immediate_attention_required"] is True
 
     checkpoints = body["commitment"]["checkpoints"]
-    assert len(checkpoints) == 1
-    assert checkpoints[0]["id"] == earliest["id"]
-    assert checkpoints[0]["scheduled_at"] == commitment["created_at"]
+    assert len(checkpoints) == 2
+    by_id = {cp["id"]: cp for cp in checkpoints}
+
+    winner = by_id[earliest["id"]]
+    assert winner["status"] == "PENDING"
+    assert winner["scheduled_at"] == commitment["created_at"]
+
+    loser = by_id[latest["id"]]
+    assert loser["status"] == "SKIPPED"
+    assert loser["scheduled_at"] == latest["scheduled_at"]  # left at its own original time, never moved
+    assert loser["source_type"] == "AUTO_RULE"
+
+    history = body["commitment"]["history"]
+    assert any(
+        h["event_type"] == "CHECKPOINT_SKIPPED"
+        and h.get("new_value", {}).get("reason") == "Объединена с другой контрольной точкой при пересчёте"
+        for h in history
+    )
+
+
+def test_recalculate_after_dedup_does_not_conflict_with_skipped_checkpoint(client):
+    """Once a checkpoint has been merged away by the dedup above, its stale
+    SKIPPED record must never re-block a later recalculation just because a
+    new plan happens to land on the same original instant."""
+    deadline = tz_now() + timedelta(days=30)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True)
+    assert len(commitment["checkpoints"]) == 2
+
+    near_deadline = tz_now() + timedelta(hours=1)
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": near_deadline.isoformat()})
+    assert resp.status_code == 200, resp.text
+    after_dedup = resp.json()["commitment"]
+    assert len(after_dedup["checkpoints"]) == 2
+
+    # Recalculate again (e.g. moving the deadline back out) — must not 422
+    # against the SKIPPED-via-merge checkpoint left sitting at its own
+    # original time.
+    later_deadline = tz_now() + timedelta(days=20)
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/reschedule", json={"deadline": later_deadline.isoformat()})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["immediate_attention_required"] is False
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert detail["deadline"] is not None
 
 
 # --- Removing the deadline turns control off (P1 review) -------------------
