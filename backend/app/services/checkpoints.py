@@ -233,13 +233,36 @@ def _default_rule_schedule(deadline: datetime, reference_time: datetime, created
     return [midpoint, deadline - timedelta(days=3)]
 
 
+def _apply_checkpoint_field_overrides(
+    db: Session, commitment: Commitment, checkpoint: CommitmentCheckpoint, field_overrides: dict[str, object]
+) -> None:
+    """Applies question/reason overrides to an *existing* (reused or
+    recalculated) checkpoint with real change-tracking: only fields that
+    actually change produce a CHECKPOINT_UPDATED entry (old_value/new_value
+    per field, no-op suppressed), and an explicit None in field_overrides is
+    a real clear-to-null rather than "leave untouched" — the caller decides
+    that by omitting the key entirely instead."""
+    if not field_overrides:
+        return
+    changed_old: dict[str, object] = {}
+    changed_new: dict[str, object] = {}
+    for field, new_value in field_overrides.items():
+        old_value = getattr(checkpoint, field)
+        if new_value == old_value:
+            continue
+        changed_old[field] = old_value
+        changed_new[field] = new_value
+        setattr(checkpoint, field, new_value)
+    if changed_new:
+        _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_UPDATED, changed_old, changed_new)
+
+
 def generate_auto_checkpoints(
     db: Session,
     commitment: Commitment,
     lead_time_days: int | None,
     reference_time: datetime,
-    question_override: str | None = None,
-    reason_override: str | None = None,
+    field_overrides: dict[str, object] | None = None,
     commit: bool = True,
 ) -> tuple[list[CommitmentCheckpoint], bool]:
     """Returns (checkpoints reflecting the current plan, immediate_attention_required).
@@ -247,15 +270,31 @@ def generate_auto_checkpoints(
     P1-06: this replaces the commitment's existing PENDING AUTO_RULE
     checkpoints with the freshly computed plan instead of piling new ones on
     top every time control settings change (e.g. 2 days -> 3 days lead
-    time). A still-pending AUTO_RULE checkpoint that keeps a slot in the new
-    plan is moved in place (CHECKPOINT_AUTO_RECALCULATED, same as a
-    reschedule); one with no slot left in the new plan is removed with no
-    history entry (same convention as deleting any other never-actioned
-    PENDING checkpoint). COMPLETED/SKIPPED checkpoints and MANUAL
-    checkpoints are never touched.
+    time). Only a PENDING AUTO_RULE checkpoint is ever reused, moved, or
+    replaced — a still-pending one that keeps a slot in the new plan is
+    moved in place (CHECKPOINT_AUTO_RECALCULATED, same as a reschedule) or,
+    if it already sits exactly on the new slot, left as-is; one with no slot
+    left in the new plan is removed with no history entry (same convention
+    as deleting any other never-actioned PENDING checkpoint).
 
-    `commit=False` lets create_commitment fold this into its own single
-    transaction instead of committing here independently.
+    MANUAL checkpoints and any COMPLETED/SKIPPED checkpoint (whatever their
+    source) are never touched, moved, or returned as part of the generated
+    plan. If the newly computed schedule would land exactly on one of them,
+    that is a real scheduling conflict: raise ValidationAppError (422)
+    *before* mutating anything, so the whole call — including any
+    lead_time_days change a caller already applied to `commitment` in the
+    same transaction — rolls back with no partial effect.
+
+    field_overrides, when given, sets question/reason (or any other simple
+    checkpoint field) on the checkpoint(s) this call touches: a key present
+    with value None is an explicit clear, a key omitted is left untouched.
+    On a freshly created checkpoint this is baked into its initial values
+    (no separate history entry); on a reused/recalculated one it goes
+    through the same real old/new change-tracking as a manual edit.
+
+    `commit=False` lets a caller (create_commitment, update_control_settings)
+    fold this into its own single transaction instead of committing here
+    independently.
     """
     if commitment.status != CommitmentStatus.ACTIVE:
         raise ConflictError("Cannot generate a checkpoint for a commitment that is not ACTIVE")
@@ -289,16 +328,31 @@ def generate_auto_checkpoints(
         for cp in commitment.checkpoints
         if cp.status == CheckpointStatus.PENDING and cp.source_type == CheckpointSourceType.AUTO_RULE
     ]
+    protected = [cp for cp in commitment.checkpoints if cp not in stale]
 
+    # Conflict pass first, over ALL resolved times, before any mutation:
+    # a MANUAL/COMPLETED/SKIPPED checkpoint sitting exactly on a slot the
+    # new plan needs is never silently reused as "already representing" it.
+    for scheduled_at in resolved_times:
+        conflict = next((cp for cp in protected if cp.scheduled_at == scheduled_at), None)
+        if conflict is not None:
+            raise ValidationAppError(
+                f"Cannot schedule an automatic checkpoint at {scheduled_at.isoformat()}: a "
+                f"{conflict.source_type.value} checkpoint ({conflict.status.value.lower()}) "
+                "already exists at that exact time"
+            )
+
+    field_overrides = field_overrides or {}
+    remaining_stale = list(stale)
     result: list[CommitmentCheckpoint] = []
     for scheduled_at in resolved_times:
-        already_present = next((cp for cp in commitment.checkpoints if cp.scheduled_at == scheduled_at), None)
-        if already_present is not None:
-            if already_present in stale:
-                stale.remove(already_present)
-            result.append(already_present)
-        elif stale:
-            checkpoint = stale.pop(0)
+        exact_match = next((cp for cp in remaining_stale if cp.scheduled_at == scheduled_at), None)
+        if exact_match is not None:
+            remaining_stale.remove(exact_match)
+            _apply_checkpoint_field_overrides(db, commitment, exact_match, field_overrides)
+            result.append(exact_match)
+        elif remaining_stale:
+            checkpoint = remaining_stale.pop(0)
             old_scheduled_at = checkpoint.scheduled_at
             checkpoint.scheduled_at = scheduled_at
             _add_history(
@@ -308,14 +362,15 @@ def generate_auto_checkpoints(
                 {"scheduled_at": old_scheduled_at.isoformat()},
                 {"scheduled_at": scheduled_at.isoformat()},
             )
+            _apply_checkpoint_field_overrides(db, commitment, checkpoint, field_overrides)
             result.append(checkpoint)
         else:
             suggestion = _suggestion_provider.suggest(commitment, scheduled_at, reference_time)
             checkpoint = CommitmentCheckpoint(
                 commitment_id=commitment.id,
                 title=suggestion.title,
-                question=suggestion.question,
-                reason=suggestion.reason,
+                question=field_overrides.get("question", suggestion.question),
+                reason=field_overrides.get("reason", suggestion.reason),
                 scheduled_at=scheduled_at,
                 source_type=CheckpointSourceType.AUTO_RULE,
             )
@@ -328,16 +383,9 @@ def generate_auto_checkpoints(
         if scheduled_at <= reference_time:
             immediate_attention = True
 
-    for leftover in stale:
+    for leftover in remaining_stale:
         commitment.checkpoints.remove(leftover)
         db.delete(leftover)
-
-    if question_override is not None or reason_override is not None:
-        for checkpoint in result:
-            if question_override is not None:
-                checkpoint.question = question_override
-            if reason_override is not None:
-                checkpoint.reason = reason_override
 
     db.flush()
 

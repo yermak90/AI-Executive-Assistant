@@ -243,13 +243,17 @@ def create_commitment(db: Session, data: CommitmentCreate) -> tuple[Commitment, 
 
     immediate_attention = False
     if data.enable_control and commitment.deadline is not None:
+        field_overrides: dict[str, object] = {}
+        if data.control_question is not None:
+            field_overrides["question"] = data.control_question
+        if data.control_reason is not None:
+            field_overrides["reason"] = data.control_reason
         _, immediate_attention = checkpoints_service.generate_auto_checkpoints(
             db,
             commitment,
             lead_time_days=data.lead_time_days,
             reference_time=tz_now(),
-            question_override=data.control_question,
-            reason_override=data.control_reason,
+            field_overrides=field_overrides,
             commit=False,
         )
 
@@ -343,6 +347,53 @@ def update_commitment(db: Session, commitment_id: uuid.UUID, data: CommitmentUpd
 
     db.commit()
     return get_commitment_or_raise(db, commitment.id)
+
+
+def update_control_settings(
+    db: Session, commitment_id: uuid.UUID, lead_time_days: int | None, question: str | None, reason: str | None
+) -> tuple[Commitment, bool]:
+    """PRD P1-06 review follow-up: the mobile "Настроить контроль" card used
+    to save lead_time_days via one PATCH and then (re)generate the checkpoint
+    via a separate POST — two independent requests, so a failure partway
+    through (e.g. a scheduling conflict) could leave lead_time_days changed
+    with no matching checkpoint change. This does both in one transaction:
+    lead_time_days, question, and reason are the full desired state (an
+    explicit None for question/reason is a real clear, not "leave
+    untouched" — this form always saves both fields together).
+
+    Returns (commitment, immediate_attention_required).
+    """
+    commitment = get_commitment_or_raise(db, commitment_id)
+    _require_active(commitment, "edit")
+
+    old_lead_time_days = commitment.lead_time_days
+    if lead_time_days != old_lead_time_days:
+        commitment.lead_time_days = lead_time_days
+        db.add(
+            CommitmentHistory(
+                commitment_id=commitment.id,
+                event_type=HistoryEventType.UPDATED,
+                old_value={"lead_time_days": _render_field(db, "lead_time_days", old_lead_time_days)},
+                new_value={"lead_time_days": _render_field(db, "lead_time_days", lead_time_days)},
+            )
+        )
+
+    immediate_attention = False
+    if lead_time_days is None:
+        if old_lead_time_days is not None:
+            checkpoints_service.disable_auto_control(db, commitment, tz_now())
+    elif commitment.deadline is not None:
+        _, immediate_attention = checkpoints_service.generate_auto_checkpoints(
+            db,
+            commitment,
+            lead_time_days=lead_time_days,
+            reference_time=tz_now(),
+            field_overrides={"question": question, "reason": reason},
+            commit=False,
+        )
+
+    db.commit()
+    return get_commitment_or_raise(db, commitment.id), immediate_attention
 
 
 def reschedule_commitment(

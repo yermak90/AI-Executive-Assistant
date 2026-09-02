@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { Alert, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { useUpdateCommitment } from "../hooks/useCommitments";
-import { useGenerateCheckpoints } from "../hooks/useCheckpoints";
+import { useUpdateControlSettings } from "../hooks/useCommitments";
 import { ApiError } from "../api/client";
 import { colors, radius, spacing, typography } from "../theme";
 import { Checkpoint } from "../types/domain";
@@ -23,12 +22,12 @@ interface ControlSettingsCardProps {
 
 /** PRD FR-015/FR-016 "Настроить контроль" block, editable after creation
  * (P1-06): pick a lead time (or a custom value), edit the control
- * question/reason, save it on the commitment, and (re)generate the
- * AUTO_RULE checkpoint from it — which replaces the existing PENDING
- * AUTO_RULE checkpoint in place rather than piling a new one on top.
- * Surfaces immediate_attention_required (P0-04) rather than letting it
- * disappear into an ignored response field, and offers turning control off
- * entirely. */
+ * question/reason, and save everything — lead_time_days, question, reason,
+ * and the (re)generated AUTO_RULE checkpoint — as one backend transaction
+ * (POST /commitments/{id}/control-settings) instead of two independent
+ * requests. Surfaces immediate_attention_required (P0-04) rather than
+ * letting it disappear into an ignored response field, and offers turning
+ * control off entirely. */
 export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline, autoCheckpoint }: ControlSettingsCardProps) {
   const [selected, setSelected] = useState<number | null>(leadTimeDays);
   const [customText, setCustomText] = useState(
@@ -38,8 +37,7 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline, a
   const [question, setQuestion] = useState(autoCheckpoint?.question ?? "");
   const [reason, setReason] = useState(autoCheckpoint?.reason ?? "");
 
-  const updateMutation = useUpdateCommitment(commitmentId);
-  const generateMutation = useGenerateCheckpoints(commitmentId);
+  const controlSettingsMutation = useUpdateControlSettings(commitmentId);
 
   if (!hasDeadline) {
     return (
@@ -50,7 +48,7 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline, a
   }
 
   const effectiveDays = customMode ? Number(customText) || null : selected;
-  const isSaving = updateMutation.isPending || generateMutation.isPending;
+  const isSaving = controlSettingsMutation.isPending;
   const isEnabled = leadTimeDays !== null;
 
   const handleSave = () => {
@@ -58,21 +56,12 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline, a
       Alert.alert("Укажите срок", "Введите количество дней больше нуля.");
       return;
     }
-    updateMutation.mutate(
-      { lead_time_days: effectiveDays },
+    controlSettingsMutation.mutate(
+      { lead_time_days: effectiveDays, question: question.trim() || null, reason: reason.trim() || null },
       {
-        onSuccess: () => {
-          generateMutation.mutate(
-            { leadTimeDays: effectiveDays, question: question.trim() || null, reason: reason.trim() || null },
-            {
-              onSuccess: (result) => {
-                const alert = resolveImmediateAttentionAlert(result.immediate_attention_required);
-                if (alert) Alert.alert(alert.title, alert.message);
-              },
-              onError: (e: unknown) =>
-                Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось создать контрольную точку"),
-            }
-          );
+        onSuccess: (result) => {
+          const alert = resolveImmediateAttentionAlert(result.immediate_attention_required);
+          if (alert) Alert.alert(alert.title, alert.message);
         },
         onError: (e: unknown) => Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось сохранить настройки"),
       }
@@ -86,8 +75,8 @@ export function ControlSettingsCard({ commitmentId, leadTimeDays, hasDeadline, a
         text: "Отключить",
         style: "destructive",
         onPress: () =>
-          updateMutation.mutate(
-            { lead_time_days: null },
+          controlSettingsMutation.mutate(
+            { lead_time_days: null, question: null, reason: null },
             {
               onError: (e: unknown) =>
                 Alert.alert("Ошибка", e instanceof ApiError ? e.detail : "Не удалось отключить контроль"),

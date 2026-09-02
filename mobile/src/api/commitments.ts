@@ -58,6 +58,17 @@ export interface CreateCommitmentResult {
   immediate_attention_required: boolean;
 }
 
+export interface ControlSettingsInput {
+  lead_time_days: number | null;
+  question: string | null;
+  reason: string | null;
+}
+
+export interface ControlSettingsResult {
+  commitment: CommitmentDetail;
+  immediate_attention_required: boolean;
+}
+
 function buildQuery(filters: CommitmentListFilters): string {
   const params = new URLSearchParams();
   if (filters.direction) params.set("direction", filters.direction);
@@ -77,6 +88,8 @@ export const commitmentsApi = {
   create: (data: CreateCommitmentInput) => apiClient.post<CreateCommitmentResult>("/commitments", data),
   update: (id: string, data: UpdateCommitmentInput) =>
     apiClient.patch<CommitmentDetail>(`/commitments/${id}`, data),
+  updateControlSettings: (id: string, data: ControlSettingsInput) =>
+    apiClient.post<ControlSettingsResult>(`/commitments/${id}/control-settings`, data),
   complete: (id: string) => apiClient.post<CommitmentDetail>(`/commitments/${id}/complete`),
   reschedule: (id: string, deadline: string | null) =>
     apiClient.post<RescheduleResult>(`/commitments/${id}/reschedule`, { deadline }),

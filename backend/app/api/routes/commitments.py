@@ -14,6 +14,8 @@ from app.schemas.commitment import (
     CommitmentRead,
     CommitmentUpdate,
     ControlHealth,
+    ControlSettingsRequest,
+    ControlSettingsResponse,
     RescheduleRequest,
     RescheduleResponse,
 )
@@ -68,6 +70,19 @@ def update_commitment(
 ) -> CommitmentDetail:
     commitment = commitments_service.update_commitment(db, commitment_id, data)
     return commitments_service.to_commitment_detail(commitment)
+
+
+@router.post("/{commitment_id}/control-settings", response_model=ControlSettingsResponse)
+def update_control_settings(
+    commitment_id: uuid.UUID, data: ControlSettingsRequest, db: Session = Depends(get_db)
+) -> ControlSettingsResponse:
+    commitment, immediate_attention = commitments_service.update_control_settings(
+        db, commitment_id, data.lead_time_days, data.question, data.reason
+    )
+    return ControlSettingsResponse(
+        commitment=commitments_service.to_commitment_detail(commitment),
+        immediate_attention_required=immediate_attention,
+    )
 
 
 @router.post("/{commitment_id}/complete", response_model=CommitmentDetail)

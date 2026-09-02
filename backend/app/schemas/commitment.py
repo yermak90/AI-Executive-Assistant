@@ -124,6 +124,23 @@ class CommitmentCreateResponse(BaseModel):
     immediate_attention_required: bool
 
 
+class ControlSettingsRequest(BaseModel):
+    """PRD P1-06 review follow-up: the "Настроить контроль" form is saved as
+    one call — lead_time_days, question, and reason are the full desired
+    state (an explicit null for question/reason is a real clear), not a
+    partial patch, and are persisted together with the (re)generated
+    AUTO_RULE checkpoint in a single backend transaction."""
+
+    lead_time_days: int | None = Field(default=None, gt=0)
+    question: str | None = None
+    reason: str | None = None
+
+
+class ControlSettingsResponse(BaseModel):
+    commitment: CommitmentDetail
+    immediate_attention_required: bool
+
+
 class RescheduleResponse(BaseModel):
     """P1-08: a reschedule can silently strand MANUAL checkpoints past the
     new deadline, or clamp a shifted AUTO_RULE checkpoint to created_at —

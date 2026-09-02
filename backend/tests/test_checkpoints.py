@@ -526,6 +526,173 @@ def test_disable_control_skips_pending_auto_checkpoint_leaves_manual(client):
     assert any(h["event_type"] == "CHECKPOINT_SKIPPED" for h in body["history"])
 
 
+# --- Generation must never touch a protected checkpoint (P0 review) --------
+
+
+def test_generate_conflicts_with_manual_checkpoint_at_exact_computed_time(client):
+    """Only a PENDING AUTO_RULE checkpoint may ever be reused or moved. If
+    the newly computed schedule lands exactly on a MANUAL checkpoint, that
+    must be a controlled error, not a silent 'already represents the plan'
+    reuse of someone's manually-placed checkpoint."""
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat())
+
+    manual_scheduled_at = deadline - timedelta(days=3)
+    manual = client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ручная проверка", "scheduled_at": manual_scheduled_at.isoformat()},
+    ).json()
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/checkpoints/generate", json={"lead_time_days": 3})
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert len(detail["checkpoints"]) == 1
+    assert detail["checkpoints"][0]["id"] == manual["id"]
+    assert detail["checkpoints"][0]["status"] == "PENDING"
+    assert detail["checkpoints"][0]["source_type"] == "MANUAL"
+
+
+def test_generate_conflicts_with_completed_checkpoint_at_exact_computed_time(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=3)
+    auto_checkpoint = commitment["checkpoints"][0]
+    assert auto_checkpoint["source_type"] == "AUTO_RULE"
+
+    # Assess it -> COMPLETED, but still sitting at deadline - 3 days.
+    client.post(f"/api/v1/checkpoints/{auto_checkpoint['id']}/assess", json={"assessment": "ON_TRACK"})
+
+    # Regenerating with the same lead time needs a slot at the exact time
+    # the now-COMPLETED checkpoint still occupies.
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/checkpoints/generate", json={"lead_time_days": 3})
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert len(detail["checkpoints"]) == 1
+    assert detail["checkpoints"][0]["id"] == auto_checkpoint["id"]
+    assert detail["checkpoints"][0]["status"] == "COMPLETED"
+    assert detail["checkpoints"][0]["assessment"] == "ON_TRACK"
+
+
+def test_generate_conflict_leaves_existing_auto_checkpoint_unmoved(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+    auto_checkpoint = commitment["checkpoints"][0]
+    original_scheduled_at = auto_checkpoint["scheduled_at"]
+
+    # A MANUAL checkpoint sitting exactly where lead_time_days=5 would try
+    # to move the existing AUTO_RULE checkpoint to.
+    conflict_at = deadline - timedelta(days=5)
+    client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ручная проверка", "scheduled_at": conflict_at.isoformat()},
+    )
+
+    resp = client.post(f"/api/v1/commitments/{commitment['id']}/checkpoints/generate", json={"lead_time_days": 5})
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    by_id = {cp["id"]: cp for cp in detail["checkpoints"]}
+    assert by_id[auto_checkpoint["id"]]["scheduled_at"] == original_scheduled_at
+    assert not any(h["event_type"] == "CHECKPOINT_AUTO_RECALCULATED" for h in detail["history"])
+
+
+# --- Control settings: one atomic transaction (P1-06 review follow-up) -----
+
+
+def test_control_settings_conflict_rolls_back_lead_time_days(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+    auto_checkpoint_id = commitment["checkpoints"][0]["id"]
+    original_scheduled_at = commitment["checkpoints"][0]["scheduled_at"]
+
+    conflict_at = deadline - timedelta(days=5)
+    client.post(
+        f"/api/v1/commitments/{commitment['id']}/checkpoints",
+        json={"title": "Ручная проверка", "scheduled_at": conflict_at.isoformat()},
+    )
+
+    resp = client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 5, "question": None, "reason": None},
+    )
+    assert resp.status_code in (409, 422), resp.text
+
+    detail = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert detail["lead_time_days"] == 2
+    by_id = {cp["id"]: cp for cp in detail["checkpoints"]}
+    assert by_id[auto_checkpoint_id]["scheduled_at"] == original_scheduled_at
+
+
+def test_control_settings_question_reason_change_creates_history(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+    auto_checkpoint = commitment["checkpoints"][0]
+
+    resp = client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 2, "question": "Готово?", "reason": "Иначе сорвём срок"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["commitment"]["checkpoints"][0]["id"] == auto_checkpoint["id"]
+    assert body["commitment"]["checkpoints"][0]["question"] == "Готово?"
+    assert body["commitment"]["checkpoints"][0]["reason"] == "Иначе сорвём срок"
+
+    updated_events = [h for h in body["commitment"]["history"] if h["event_type"] == "CHECKPOINT_UPDATED"]
+    assert len(updated_events) == 1
+    assert updated_events[0]["old_value"] == {"question": auto_checkpoint["question"], "reason": auto_checkpoint["reason"]}
+    assert updated_events[0]["new_value"] == {"question": "Готово?", "reason": "Иначе сорвём срок"}
+    assert not any(h["event_type"] == "CHECKPOINT_AUTO_RECALCULATED" for h in body["commitment"]["history"])
+
+
+def test_control_settings_no_op_creates_no_history(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+
+    client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 2, "question": "Готово?", "reason": "Иначе сорвём срок"},
+    )
+    before = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+
+    resp = client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 2, "question": "Готово?", "reason": "Иначе сорвём срок"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    after = client.get(f"/api/v1/commitments/{commitment['id']}").json()
+    assert len(after["history"]) == len(before["history"])
+
+
+def test_control_settings_clearing_question_reason_sets_null_and_records_history(client):
+    deadline = tz_now() + timedelta(days=10)
+    commitment = _create_commitment(client, deadline=deadline.isoformat(), enable_control=True, lead_time_days=2)
+
+    client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 2, "question": "Готово?", "reason": "Иначе сорвём срок"},
+    )
+
+    resp = client.post(
+        f"/api/v1/commitments/{commitment['id']}/control-settings",
+        json={"lead_time_days": 2, "question": None, "reason": None},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["commitment"]["checkpoints"][0]["question"] is None
+    assert body["commitment"]["checkpoints"][0]["reason"] is None
+
+    updated_events = [h for h in body["commitment"]["history"] if h["event_type"] == "CHECKPOINT_UPDATED"]
+    assert len(updated_events) == 2
+    clear_event = updated_events[-1]
+    assert clear_event["old_value"] == {"question": "Готово?", "reason": "Иначе сорвём срок"}
+    assert clear_event["new_value"] == {"question": None, "reason": None}
+
+
 # --- Checkpoint update history (review follow-up) ---------------------------
 
 
