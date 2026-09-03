@@ -9,8 +9,18 @@ Sprint 1 delivers the manual, AI-free foundation described in
 [`PRD.md`](./PRD.md) (v2.0): people, projects, commitments with a real state
 machine, all five time buckets (Overdue/Today/Tomorrow/Later/No deadline),
 an archive, detailed change history, and managerial checkpoints with
-rule-based planning and risk assessment. No audio, no LLM, no integrations —
-those are Sprint 2+.
+rule-based planning and risk assessment.
+
+**Sprint 2 (in progress, backend-first — see [`PRD.md`](./PRD.md) §§14-30):**
+Voice Note AI Capture. Backend implemented and tested: `voice_captures` table
+and state machine, upload/audio validation, a deterministic fake STT +
+extraction pipeline (`STT_PROVIDER=fake` / `LLM_PROVIDER=fake`, no network),
+atomic/idempotent confirmation that reuses Sprint 1's commitment and
+checkpoint services, retry with a limit, discard, and lazy expiry — see
+`backend/app/api/routes/voice_captures.py` and
+`backend/tests/test_voice_captures.py`. **Not yet built:** mobile
+recording/review UI, a real (non-fake) STT/LLM adapter, and the AI benchmark
+fixtures/report — see PRD §30 for the full Definition of Done.
 
 ## Repository layout
 

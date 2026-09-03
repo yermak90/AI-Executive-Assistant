@@ -201,11 +201,16 @@ def _resolve_direction_ownership(commitment: Commitment, updates: dict) -> None:
         raise ValidationAppError(f"owner_person_id is required for direction {resolved_direction.value}")
 
 
-def create_commitment(db: Session, data: CommitmentCreate) -> tuple[Commitment, bool]:
+def create_commitment(db: Session, data: CommitmentCreate, commit: bool = True) -> tuple[Commitment, bool]:
     """Returns (commitment, immediate_attention_required). The commitment,
     its CREATED history entry, and any auto-generated initial checkpoint
     (with its own history entry) are all created in a single transaction —
-    either the whole thing lands, or none of it does."""
+    either the whole thing lands, or none of it does.
+
+    `commit=False` lets a caller (Sprint 2 voice-capture confirmation) fold
+    this into a larger transaction of its own — e.g. adding AI_SUGGESTED
+    checkpoints and linking a VoiceCapture — instead of committing here
+    independently, same convention as generate_auto_checkpoints."""
     if data.owner_person_id is not None:
         _get_person_or_raise(db, data.owner_person_id)
     if data.counterparty_person_id is not None:
@@ -257,7 +262,10 @@ def create_commitment(db: Session, data: CommitmentCreate) -> tuple[Commitment, 
             commit=False,
         )
 
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return get_commitment_or_raise(db, commitment.id), immediate_attention
 
 

@@ -100,6 +100,42 @@ def create_manual_checkpoint(db: Session, commitment: Commitment, data: Checkpoi
     return checkpoint
 
 
+def create_ai_suggested_checkpoint(
+    db: Session,
+    commitment: Commitment,
+    title: str,
+    question: str | None,
+    reason: str | None,
+    scheduled_at: datetime,
+    commit: bool = True,
+) -> CommitmentCheckpoint:
+    """Sprint 2 (PRD §19.1): a confirmed AI checkpoint suggestion goes through
+    the same timing/duplicate validation as a manual one — the AI layer never
+    implements a second checkpoint algorithm — and is persisted with
+    source_type=AI_SUGGESTED, status=PENDING, assessment=UNKNOWN.
+    `commit=False` lets the caller (voice capture confirmation) fold this
+    into the same transaction as the commitment it belongs to."""
+    _validate_checkpoint_timing(commitment, scheduled_at)
+    if _has_duplicate(commitment, scheduled_at):
+        raise ValidationAppError("A checkpoint is already scheduled at this exact time")
+
+    checkpoint = CommitmentCheckpoint(
+        commitment_id=commitment.id,
+        title=title,
+        question=question,
+        reason=reason,
+        scheduled_at=scheduled_at,
+        source_type=CheckpointSourceType.AI_SUGGESTED,
+    )
+    db.add(checkpoint)
+    db.flush()
+    _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_CREATED, None, _checkpoint_snapshot(checkpoint))
+    if commit:
+        db.commit()
+        db.refresh(checkpoint)
+    return checkpoint
+
+
 def update_checkpoint(db: Session, checkpoint: CommitmentCheckpoint, data: CheckpointUpdate) -> CommitmentCheckpoint:
     if checkpoint.status != CheckpointStatus.PENDING:
         raise ConflictError("Only a PENDING checkpoint can be edited")

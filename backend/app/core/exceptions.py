@@ -3,8 +3,9 @@ class AppError(Exception):
 
     status_code: int = 400
 
-    def __init__(self, message: str):
+    def __init__(self, message: str, code: str | None = None):
         self.message = message
+        self.code = code
         super().__init__(message)
 
 
