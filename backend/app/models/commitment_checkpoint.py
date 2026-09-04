@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -33,6 +33,9 @@ class CheckpointSourceType(str, enum.Enum):
 
 class CommitmentCheckpoint(Base):
     __tablename__ = "commitment_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("commitment_id", "scheduled_at", name="uq_commitment_checkpoints_commitment_scheduled_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     commitment_id: Mapped[uuid.UUID] = mapped_column(

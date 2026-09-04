@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     voice_capture_max_bytes: int = 15 * 1024 * 1024
     voice_capture_ttl_hours: int = 24
     voice_capture_max_retries: int = 3
+    # PRD §31 P0-3: automatic retention sweep interval — an in-process
+    # periodic task, not just lazy expiry-on-read. Not part of the PRD's
+    # required env-var list; internal tuning knob for this MVP.
+    voice_capture_retention_sweep_seconds: int = 300
+    # Fallback poll interval for the processing worker loop; an upload wakes
+    # it immediately, this is only the backstop for a wake that fired before
+    # the loop was listening (PRD §31 P0-1).
+    voice_capture_poll_seconds: float = 2.0
     # Local filesystem directory for opaque audio storage keys (PRD §23).
     # Not part of the PRD's required env-var list; internal to this MVP's
     # storage adapter and swappable without touching callers.

@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ConflictError, NotFoundError, ValidationAppError
@@ -72,16 +73,42 @@ def _validate_checkpoint_timing(commitment: Commitment, scheduled_at: datetime) 
         raise ValidationAppError("Checkpoint must be scheduled before the commitment's deadline")
 
 
-def _has_duplicate(commitment: Commitment, scheduled_at: datetime, exclude_id: uuid.UUID | None = None) -> bool:
-    return any(
-        cp.scheduled_at == scheduled_at and cp.id != exclude_id
-        for cp in commitment.checkpoints
+def _has_duplicate(db: Session, commitment_id: uuid.UUID, scheduled_at: datetime, exclude_id: uuid.UUID | None = None) -> bool:
+    """PRD §31 P1-3: queries the DB directly (post-flush) rather than the
+    ORM's in-memory `commitment.checkpoints` collection. That collection is
+    NOT auto-updated by a bare `db.add()`/`db.flush()` of a new child row
+    unless it was also appended to the relationship — so two AI-suggested
+    checkpoints confirmed in the same request, both landing on the same
+    scheduled_at, could each check a collection that doesn't yet reflect the
+    other one's flushed insert and both pass the check. A fresh query always
+    sees every flushed write in the current transaction."""
+    query = select(CommitmentCheckpoint.id).where(
+        CommitmentCheckpoint.commitment_id == commitment_id,
+        CommitmentCheckpoint.scheduled_at == scheduled_at,
     )
+    if exclude_id is not None:
+        query = query.where(CommitmentCheckpoint.id != exclude_id)
+    return db.execute(query.limit(1)).first() is not None
+
+
+def _flush_new_checkpoint(db: Session, checkpoint: CommitmentCheckpoint) -> None:
+    """PRD §31 P1-3: the app-level _has_duplicate check is the friendly
+    error path; the (commitment_id, scheduled_at) DB unique constraint is
+    the actual safety net for a genuine concurrent race between two
+    requests both passing that check before either flushes. Translate the
+    resulting IntegrityError into the same 422 the pre-check would have
+    given, instead of a raw 500."""
+    db.add(checkpoint)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise ValidationAppError("A checkpoint is already scheduled at this exact time") from exc
 
 
 def create_manual_checkpoint(db: Session, commitment: Commitment, data: CheckpointCreate) -> CommitmentCheckpoint:
     _validate_checkpoint_timing(commitment, data.scheduled_at)
-    if _has_duplicate(commitment, data.scheduled_at):
+    if _has_duplicate(db, commitment.id, data.scheduled_at):
         raise ValidationAppError("A checkpoint is already scheduled at this exact time")
 
     checkpoint = CommitmentCheckpoint(
@@ -92,8 +119,7 @@ def create_manual_checkpoint(db: Session, commitment: Commitment, data: Checkpoi
         scheduled_at=data.scheduled_at,
         source_type=CheckpointSourceType.MANUAL,
     )
-    db.add(checkpoint)
-    db.flush()
+    _flush_new_checkpoint(db, checkpoint)
     _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_CREATED, None, _checkpoint_snapshot(checkpoint))
     db.commit()
     db.refresh(checkpoint)
@@ -116,7 +142,7 @@ def create_ai_suggested_checkpoint(
     `commit=False` lets the caller (voice capture confirmation) fold this
     into the same transaction as the commitment it belongs to."""
     _validate_checkpoint_timing(commitment, scheduled_at)
-    if _has_duplicate(commitment, scheduled_at):
+    if _has_duplicate(db, commitment.id, scheduled_at):
         raise ValidationAppError("A checkpoint is already scheduled at this exact time")
 
     checkpoint = CommitmentCheckpoint(
@@ -127,8 +153,7 @@ def create_ai_suggested_checkpoint(
         scheduled_at=scheduled_at,
         source_type=CheckpointSourceType.AI_SUGGESTED,
     )
-    db.add(checkpoint)
-    db.flush()
+    _flush_new_checkpoint(db, checkpoint)
     _add_history(db, commitment.id, HistoryEventType.CHECKPOINT_CREATED, None, _checkpoint_snapshot(checkpoint))
     if commit:
         db.commit()
@@ -147,7 +172,7 @@ def update_checkpoint(db: Session, checkpoint: CommitmentCheckpoint, data: Check
         new_scheduled_at = updates.pop("scheduled_at")
         _validate_checkpoint_timing(commitment, new_scheduled_at)
         if new_scheduled_at != checkpoint.scheduled_at:
-            if _has_duplicate(commitment, new_scheduled_at, exclude_id=checkpoint.id):
+            if _has_duplicate(db, commitment.id, new_scheduled_at, exclude_id=checkpoint.id):
                 raise ValidationAppError("A checkpoint is already scheduled at this exact time")
             old_scheduled_at = checkpoint.scheduled_at
             checkpoint.scheduled_at = new_scheduled_at
@@ -359,6 +384,13 @@ def generate_auto_checkpoints(
             scheduled_at = commitment.created_at
             immediate_attention = True
         resolved_times.append(scheduled_at)
+
+    # PRD §31 P1-3: two rule slots can clamp to the exact same created_at
+    # (e.g. both the midpoint and deadline-3d branch, on a very short-lived
+    # commitment) — collapse to one checkpoint per instant rather than
+    # trying to insert two rows at an identical scheduled_at, which the new
+    # (commitment_id, scheduled_at) DB constraint would otherwise reject.
+    resolved_times = list(dict.fromkeys(resolved_times))
 
     stale = [
         cp

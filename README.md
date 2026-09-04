@@ -11,14 +11,24 @@ machine, all five time buckets (Overdue/Today/Tomorrow/Later/No deadline),
 an archive, detailed change history, and managerial checkpoints with
 rule-based planning and risk assessment.
 
-**Sprint 2 (in progress, backend-first — see [`PRD.md`](./PRD.md) §§14-30):**
-Voice Note AI Capture. Backend implemented and tested: `voice_captures` table
-and state machine, upload/audio validation, a deterministic fake STT +
-extraction pipeline (`STT_PROVIDER=fake` / `LLM_PROVIDER=fake`, no network),
+**Sprint 2 (in progress, backend-first — see [`PRD.md`](./PRD.md) §§14-31):**
+Voice Note AI Capture. Backend implemented and tested, including the
+mandatory §31 code-review corrections: `voice_captures` table and state
+machine, streaming-validated upload, processing decoupled onto a persistent
+in-process worker (POST returns 202 before STT/extraction run — see
+`app/main.py`'s `_voice_processing_worker_loop`), a deterministic fake STT +
+extraction pipeline (`STT_PROVIDER=fake` / `LLM_PROVIDER=fake`, no network)
+with strict Pydantic validation of every provider response
+(`app/schemas/ai_contract.py`), real MP3/M4A/AAC structural parsing for
+format/duration/decodability (`app/services/audio_formats.py`, WAV already
+covered via the stdlib `wave` module), row-level-locked (`SELECT ... FOR
+UPDATE`) concurrency safety across processing/retry/discard/confirm/expiry,
+periodic automatic retention (an interval sweep, not just lazy
+expiry-on-read) with retryable post-commit audio cleanup, and
 atomic/idempotent confirmation that reuses Sprint 1's commitment and
-checkpoint services, retry with a limit, discard, and lazy expiry — see
-`backend/app/api/routes/voice_captures.py` and
-`backend/tests/test_voice_captures.py`. **Not yet built:** mobile
+checkpoint services — see `backend/app/services/voice_captures.py` and
+`backend/tests/test_voice_captures.py` /
+`backend/tests/test_audio_formats.py`. **Not yet built:** mobile
 recording/review UI, a real (non-fake) STT/LLM adapter, and the AI benchmark
 fixtures/report — see PRD §30 for the full Definition of Done.
 

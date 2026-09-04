@@ -5,6 +5,7 @@ backend/__pycache__/
 *.pyc
 backend/.env
 backend/.pytest_cache/
+backend/.voice_audio/
 
 # Node / Expo
 mobile/node_modules/
