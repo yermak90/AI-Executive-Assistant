@@ -1273,7 +1273,11 @@ not redesign the already accepted worker or state machine.
 1. Install Expo-SDK-compatible audio recording/playback and persistent local
    storage packages using `npx expo install`; do not hand-pick incompatible
    versions. Keep the app native-first and do not add permanent web-only
-   dependencies.
+   dependencies. First run `npx expo install --check` / `--fix` and commit both
+   `package.json` and `package-lock.json`: CI run 23 on the PRD-only commit
+   showed current Expo metadata expects `expo ~57.0.20` and
+   `expo-router ~57.0.19`, while the lockfile resolved 57.0.19/57.0.18. Do not
+   silence this by adding packages to `expo.install.exclude`.
 2. Extend `mobile/src/types/domain.ts` with the exact §21 schemas and
    VoiceCapture states. Do not use `any` for API or form payloads.
 3. Add a dedicated typed API module covering upload, list/read, retry,
