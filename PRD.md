@@ -1,7 +1,7 @@
-# AI Executive Assistant — Product Requirements Document (v3.1)
+# AI Executive Assistant — Product Requirements Document (v3.2)
 
 **Updated:** 4 September 2026
-**Status:** Sprint 1 baseline + Sprint 2 specification with mandatory code-review corrections
+**Status:** Sprint 1 baseline + final Sprint 2 implementation package
 
 ## 1. Problem
 
@@ -1067,21 +1067,25 @@ Leave an uploaded capture unconfirmed beyond `expires_at`. It becomes
 
 ### Backend
 
-- [ ] additive migration preserves populated Sprint 1 data;
-- [ ] VoiceCapture model/state machine implemented;
-- [ ] safe upload, storage, retention, and cleanup implemented;
-- [ ] upload size is enforced during streaming before full body allocation;
-- [ ] POST upload returns 202 before provider processing begins;
-- [ ] DB-backed worker and stale-job recovery implemented independently from
+- [x] additive migration preserves populated Sprint 1 data;
+- [x] VoiceCapture model/state machine implemented;
+- [x] safe upload, private storage, periodic retention, and retryable terminal
+      cleanup implemented;
+- [ ] residual API metadata/MIME validation and orphan-file reconciliation
+      from §32.1 implemented;
+- [x] upload size is enforced during streaming before full body allocation;
+- [x] POST upload returns 202 before provider processing begins;
+- [x] DB-backed worker and stale-job recovery implemented independently from
       the request lifecycle;
-- [ ] concurrency-safe state transitions and race tests implemented;
-- [ ] fake and real provider adapters implemented;
-- [ ] strict Pydantic provider-output, candidate, date, and entity rules
+- [x] concurrency-safe state transitions and race tests implemented;
+- [x] deterministic fake provider adapters implemented;
+- [ ] configurable real STT and extraction provider adapters implemented;
+- [x] strict Pydantic provider-output, candidate, date, and entity rules
       implemented;
-- [ ] atomic idempotent confirmation implemented;
-- [ ] post-commit/retryable audio deletion and periodic expiry implemented;
-- [ ] duplicate AI checkpoints are blocked in service and database;
-- [ ] all backend and Sprint 1 regression tests pass.
+- [x] atomic idempotent confirmation implemented;
+- [x] post-commit/retryable audio deletion and periodic expiry implemented;
+- [x] duplicate AI checkpoints are blocked in service and database;
+- [x] all backend and Sprint 1 regression tests pass with fake providers.
 
 ### Mobile
 
@@ -1190,3 +1194,311 @@ limitations, and:
 SPRINT 2 BACKEND FOUNDATION READY: YES | NO
 READY FOR MOBILE DEVELOPMENT: YES | NO
 ```
+
+### 31.2 Review correction closure
+
+The mandatory correction package was completed on 4 September 2026:
+
+```text
+correction commit: 15060ecf0c0c8edda4f59510182a0a6e9e508fe0
+backend tests: 127 passed
+exact-commit CI: GREEN
+SPRINT 2 BACKEND FOUNDATION READY: YES
+READY FOR MOBILE DEVELOPMENT: YES
+```
+
+Section 31 remains as the audit record. Its P0/P1 items must not be reopened or
+rewritten while implementing the remaining scope unless a regression is
+demonstrated by a failing test.
+
+---
+
+## 32. Final Sprint 2 implementation package for Claude Code
+
+This section is the executable brief for completing Sprint 2. Start from:
+
+```text
+branch: claude/sprint-2-development-7wn6kz
+required base commit: 15060ecf0c0c8edda4f59510182a0a6e9e508fe0
+```
+
+Before changing code, verify that `HEAD` contains the required base commit and
+that the worktree has no unrelated user changes. Preserve all Sprint 1
+invariants and all corrections from §31. Do not replace the current
+VoiceCapture state machine, worker, fake providers, confirmation transaction,
+or checkpoint services with parallel business logic.
+
+The only remaining product scope is:
+
+| Workstream | Required result | Release critical |
+| --- | --- | --- |
+| Backend conformance | Close residual API/storage requirements from §§21/23 | Yes |
+| Mobile voice capture | Record, preview, upload, process, review, confirm | Yes |
+| Real providers | One configurable STT and one structured-output LLM adapter | Yes |
+| AI benchmark | Versioned Russian fixtures, runner, metrics, report | Yes |
+| Release validation | Automated gates plus physical Android Scenarios A–G | Yes |
+
+### 32.1 Residual backend conformance
+
+Complete the following requirements already present in §§18.2, 21.1, and 23;
+they were not part of the narrower §31 correction list:
+
+1. Validate `language_hint` and `Idempotency-Key` length/format at the API
+   boundary before SQL. Bound any accepted filename/form/header metadata so an
+   oversized value returns a stable 4xx response, never a database error/500.
+2. Persist the canonical MIME type detected from audio bytes. A conflicting
+   client MIME header must be rejected or replaced by the canonical value; it
+   must never override the detected container.
+3. Before returning `GET /voice-captures`, expire all due non-terminal rows in
+   the result under the same row-locking rules used by the periodic sweep. A
+   capture whose `expires_at` has passed must not be shown as active merely
+   because the five-minute sweep has not run yet.
+4. Add startup and periodic orphan-file reconciliation between the private
+   storage directory and live `audio_storage_key` references. Use a safety
+   grace period so an upload between file creation and DB commit is not
+   deleted. Remove a newly written file after any failed database commit, not
+   only an `IntegrityError`.
+5. Ensure the storage directory and files use restrictive permissions where
+   supported and never follow a client-controlled path.
+6. Correct stale comments/docs that still describe request-bound background
+   processing; the implementation uses the persistent application worker.
+
+Add regression tests for every item, including oversized metadata, MIME
+mismatch, list-before-sweep expiry, commit failure cleanup, safe grace-period
+behaviour, and orphan deletion. These are focused completion tasks; they must
+not redesign the already accepted worker or state machine.
+
+### 32.2 Mobile foundation and typed API
+
+1. Install Expo-SDK-compatible audio recording/playback and persistent local
+   storage packages using `npx expo install`; do not hand-pick incompatible
+   versions. Keep the app native-first and do not add permanent web-only
+   dependencies.
+2. Extend `mobile/src/types/domain.ts` with the exact §21 schemas and
+   VoiceCapture states. Do not use `any` for API or form payloads.
+3. Add a dedicated typed API module covering upload, list/read, retry,
+   confirm, and discard. Upload must send multipart audio, `language_hint=ru`,
+   and a stable `Idempotency-Key` retained across network retries.
+4. Add query/mutation hooks with bounded polling. Stop polling on
+   `READY_FOR_REVIEW`, `FAILED`, `CONFIRMED`, `DISCARDED`, or `EXPIRED`.
+   Pause cleanly in background and refetch immediately on foreground.
+5. Persist only the unfinished capture ID and safe UI metadata locally. Never
+   persist provider credentials, raw provider output, or an extra copy of the
+   transcript. On application restart, offer to resume the recent capture;
+   clear the pointer after terminal completion or expiry.
+6. Map every stable error code from §24 to safe Russian UI copy. Unknown
+   errors use a generic recoverable message without stack traces or backend
+   internals.
+
+### 32.3 Recording and processing UX
+
+Add a microphone action to both Today and Tasks while retaining the existing
+manual-create action. Implement a dedicated voice-capture route with an
+explicit state reducer:
+
+```text
+permission → ready → recording → stopped → uploading → processing
+           ↘ denied      ↘ re-record       ↘ failed/retry
+processing → ready-for-review | failed | expired
+```
+
+Required behaviour:
+
+- ask for microphone permission only after an explicit user action;
+- permission denial explains how to enable access and leaves manual creation
+  available;
+- display a live timer and stop automatically at 90 seconds;
+- allow stop, playback, delete, cancel, and re-record before upload;
+- show the retention/provider disclosure before the first upload;
+- prevent duplicate upload taps and reuse the same idempotency key on retry;
+- show upload progress when available, then the four Russian processing stages
+  from §22.2;
+- never display an infinite spinner: show retry and exit after a bounded
+  polling/network failure;
+- discard server-side captures when the user chooses “Удалить черновик”;
+- use accessible labels, non-colour-only state, large touch targets, and
+  layouts that remain usable with large system text.
+
+The 90-second UI limit is a convenience, not a security boundary; the backend
+limits remain authoritative.
+
+### 32.4 Review and confirmation UX
+
+When the capture becomes `READY_FOR_REVIEW`, initialize an editable form from
+the server candidate. The screen must show:
+
+1. expandable transcript and original deadline phrase;
+2. title and description;
+3. direction;
+4. owner/counterparty selectors using existing people;
+5. project selector using existing projects;
+6. deadline picker in `APP_TIMEZONE` semantics;
+7. field warnings and `needs_confirmation` beside the affected field;
+8. checkpoint suggestions with keep/remove/edit controls;
+9. “Создать обязательство” and “Удалить черновик”.
+
+Do not auto-create a Person or Project from an AI name. Resolve only to an
+existing record selected by the user. Enforce the Sprint 1 direction rules
+before enabling confirmation. A deadline is allowed in this initial confirm
+payload, but must never be added back to the general commitment edit PATCH.
+
+Confirmation sends final user values, not the untouched AI object. Ignore
+double taps while the first request is pending; if the response is lost,
+retrying must use the same capture and rely on backend idempotency. On success,
+clear the local resume pointer and open the existing Commitment Detail route.
+Manual commitment creation and editing must continue to work unchanged.
+
+“Проанализировать снова” is not required for Sprint 2 because the current API
+has no transcript-reanalysis endpoint. Do not invent a hidden client-only
+implementation; defer it to a later PRD unless the backend contract is added
+and reviewed.
+
+### 32.5 Real provider adapters
+
+Implement provider value `openai_compatible` for both existing ports. It must
+work with a configurable OpenAI-compatible server through `STT_BASE_URL` /
+`LLM_BASE_URL` and must not hard-code a vendor hostname or model.
+
+STT adapter requirements:
+
+- implement `TranscriptionProvider` without changing its callers;
+- send the validated audio with configured model and Russian language hint;
+- return only `TranscriptResult`;
+- map authentication/configuration, timeout, rate-limit, no-speech, malformed
+  response, and transport failures to the stable §24 codes;
+- never log audio, authorization headers, or full transcripts.
+
+Extraction adapter requirements:
+
+- implement `CommitmentExtractionProvider` without changing its callers;
+- treat transcript and entity lists as untrusted data, never instructions;
+- request the exact §19 JSON shape using provider-supported structured output
+  when available and otherwise strict JSON-only output;
+- include capture time, `APP_TIMEZONE`, language hint, and known names needed
+  for suggestions, but no secrets or unrelated database data;
+- pass every response through the existing strict Pydantic validation and the
+  single schema-repair attempt; never bypass server-side date/entity/direction
+  validation;
+- preserve provider/model metadata and stable failure mapping.
+
+Use the existing shared `httpx` dependency unless a provider SDK is clearly
+necessary. Factories accept only `fake` and `openai_compatible`; an unknown
+value must still produce a controlled `FAILED` capture. Keep fake providers as
+the default and ensure all CI tests remain network-free. Add safe examples to
+`.env.example` and setup documentation to README without real credentials.
+
+### 32.6 Real-provider tests
+
+Add mocked HTTP contract tests for both adapters. They must prove:
+
+- exact request URL, authentication handling, model, language, and payload;
+- success mapping into the existing typed contracts;
+- configured timeout and bounded retry count;
+- 401/403, 429, 5xx, connection failure, timeout, malformed JSON, schema
+  violation, and failed repair mapping;
+- prompt-injection text cannot select tools or invoke application actions;
+- no secret, audio bytes, full transcript, or raw response appears in logs.
+
+Add one opt-in smoke script/test for a configured real endpoint. It is skipped
+without credentials and is not part of default CI. Its result is evidence for
+the release report, not a substitute for the versioned benchmark.
+
+### 32.7 AI benchmark and report
+
+Create the §28 fixture tree plus a deterministic runner, for example:
+
+```text
+backend/tests/fixtures/voice_benchmark/
+  manifest.json
+  audio/
+  expected/
+  README.md
+backend/scripts/run_voice_benchmark.py
+docs/voice-benchmark-report.md
+```
+
+The manifest must contain at least 40 consented or synthetic Russian cases,
+stable IDs, categories, capture timestamps, expected structured fields, and a
+flag distinguishing positive and negative cases. Do not commit real personal,
+confidential, or production meeting audio. Every fixture records its origin
+and licence/consent status.
+
+The runner supports `--provider fake` and `--provider openai_compatible`, never
+writes credentials, and emits machine-readable JSON plus the Markdown report.
+It calculates all metrics in §28, per-category breakdowns, latency p50/p95,
+failure codes, and the evaluated commit/config/model identifiers. Semantic
+transcription completeness and checkpoint usefulness may use an explicitly
+documented human rubric; all other metrics must be reproducible from expected
+JSON.
+
+The report must show numerator/denominator, not only percentages. No metric may
+silently exclude a failed case. A release candidate fails if any §28 gate is
+missed; document the failed cases and keep `READY FOR SPRINT 2 RELEASE: NO`.
+
+### 32.8 Automated verification gate
+
+Before declaring completion, run from a clean checkout of the final SHA:
+
+```text
+git diff --check
+backend: install dependencies
+backend: alembic upgrade from a populated Sprint 1 database
+backend: alembic downgrade base && alembic upgrade head
+backend: python -m pytest -v
+mobile: npm ci
+mobile: npm run typecheck
+mobile: npm test -- --runInBand
+mobile: npx expo-doctor
+mobile: npx expo export --platform android --output-dir <temporary-directory>
+benchmark: fake-provider deterministic run
+benchmark: configured real-provider run
+GitHub Actions: GREEN for the exact final commit SHA
+```
+
+CI must continue to require no external credentials. Add mobile tests from
+§27.2, adapter contract tests from §32.6, and benchmark-runner unit tests.
+Do not weaken, skip, delete, or rewrite an existing failing regression test to
+make the gate green.
+
+### 32.9 Manual Android release gate
+
+Automated export is not physical-device acceptance. On an Android emulator or
+physical Android device, verify microphone permission denial/grant, record,
+timer limit, playback, re-record, network retry, background/foreground resume,
+large text, discard, and double-tap confirmation. Then execute Scenarios A and
+B from Sprint 1 and Scenarios C–G from §29 against the final candidate.
+
+Record device/Android version, backend/provider/model, date, tester, outcome,
+and screenshots or a short screen recording. If a physical-device step has
+not been performed, the implementation may be marked code-complete but not
+release-ready.
+
+### 32.10 Documentation and delivery report
+
+Update README, `.env.example`, and the Sprint 2 checkboxes in §30 with only
+verified facts. Document local fake-provider setup, real-provider setup,
+mobile LAN connection, retention, benchmark command, known limitations, and
+the fact that Kazakh/English are not release claims.
+
+The final Claude Code report must include:
+
+```text
+base SHA
+final SHA
+changed files grouped by mobile/backend/tests/docs
+migration result
+backend and mobile test counts
+benchmark command, provider/model and metric table
+manual Android matrix for Scenarios A–G
+exact GitHub Actions URL and result for final SHA
+known limitations
+SPRINT 2 CODE COMPLETE: YES | NO
+READY FOR SPRINT 2 RELEASE: YES | NO
+```
+
+Claude Code may set `SPRINT 2 CODE COMPLETE: YES` only when §§32.1–32.8 and
+documentation are complete. It may set `READY FOR SPRINT 2 RELEASE: YES` only
+when the real-provider benchmark passes every §28 threshold, manual Android
+Scenarios A–G pass, and CI is green for the exact final SHA. Do not create a
+release tag when either value is `NO`; leave the branch as a release candidate
+and report the missing evidence explicitly.
